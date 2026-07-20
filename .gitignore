@@ -1,0 +1,45 @@
+# --- Go ---
+# Compiled binaries
+/relay-mcp
+/relay-mcp.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# --- Editor / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OpenCode runtime metadata ---
+# Local agent registry cache, not part of the project.
+.atl/
+
+# --- Reference material (not ours) ---
+# The original-repo/ directory contains the abandoned Forge (Node/TS) project
+# that inspired this Go rewrite. It is reference material, not part of our code.
+/original-repo/
+
+# --- SDD local artifacts ---
+# Artifact store is engram; no openspec/ folder is generated in this repo.
+# If you switch to openspec later, do NOT ignore it here.
+
+# --- Build / dist ---
+/dist/
+/build/
+/bin/
