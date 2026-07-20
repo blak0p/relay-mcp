@@ -18,12 +18,13 @@ func NewRegistry() *Registry {
 }
 
 // Put stores session as the active session. It returns ErrSessionAlreadyExists
-// if a session is already registered; the existing session is NOT replaced.
+// (wrapped with the existing id) if a session is already registered; the
+// existing session is NOT replaced. Use ExistingSessionID(err) to read the id.
 func (r *Registry) Put(session *Session) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.current != nil {
-		return ErrSessionAlreadyExists
+		return newExistingSessionError(r.current.ID)
 	}
 	r.current = session
 	return nil

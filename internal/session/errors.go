@@ -1,6 +1,39 @@
 package session
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
+
+// existingSessionError wraps ErrSessionAlreadyExists and carries the id of
+// the already-active session so the MCP handler can surface it to the client
+// (REQ-004). errors.Is(err, ErrSessionAlreadyExists) still holds.
+type existingSessionError struct {
+	id  string
+	err error
+}
+
+func (e *existingSessionError) Error() string {
+	return fmt.Sprintf("%v (existing id=%s)", e.err, e.id)
+}
+
+func (e *existingSessionError) Unwrap() error { return e.err }
+
+// ExistingSessionID returns the id of the already-active session embedded in
+// the error returned by Registry.Put, or "" if the error is not an
+// existing-session error (or carries no id).
+func ExistingSessionID(err error) string {
+	var ese *existingSessionError
+	if errors.As(err, &ese) {
+		return ese.id
+	}
+	return ""
+}
+
+// newExistingSessionError builds the wrapper carrying the existing id.
+func newExistingSessionError(id string) error {
+	return &existingSessionError{id: id, err: ErrSessionAlreadyExists}
+}
 
 // Sentinel errors for the session lifecycle. Each failure mode maps to a
 // distinct error so callers (the MCP handler in PR2) can branch on errors.Is

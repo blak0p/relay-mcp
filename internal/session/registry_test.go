@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -95,5 +96,35 @@ func TestRegistry_ConcurrentPutIsSafe(t *testing.T) {
 	}
 	if success != 1 {
 		t.Fatalf("exactly one Put must succeed, got %d", success)
+	}
+}
+
+func TestRegistry_DuplicatePutIncludesExistingID(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	first := newTestSession(t)
+	second := newTestSession(t)
+
+	if err := reg.Put(first); err != nil {
+		t.Fatalf("first Put = %v, want nil", err)
+	}
+	err := reg.Put(second)
+	if !errors.Is(err, ErrSessionAlreadyExists) {
+		t.Fatalf("second Put = %v, want ErrSessionAlreadyExists", err)
+	}
+	got := ExistingSessionID(err)
+	if got != first.ID {
+		t.Fatalf("ExistingSessionID(err) = %q, want %q", got, first.ID)
+	}
+	// And it should also be present in the error message for logging.
+	if !strings.Contains(err.Error(), first.ID) {
+		t.Fatalf("err.Error() = %q, want it to contain %q", err.Error(), first.ID)
+	}
+}
+
+func TestExistingSessionID_OnPlainError(t *testing.T) {
+	t.Parallel()
+	if got := ExistingSessionID(errors.New("plain error")); got != "" {
+		t.Fatalf("ExistingSessionID on plain error = %q, want empty", got)
 	}
 }
