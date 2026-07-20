@@ -35,6 +35,7 @@ type Session struct {
 	ID        string
 	PTY       *os.File  // master end of the PTY
 	Cmd       *exec.Cmd // bash process handle
+	PID       int       // cached for liveness checks
 	StartedAt time.Time
 	State     SessionState
 
@@ -75,4 +76,41 @@ func (s *Session) Close() error {
 		return s.PTY.Close()
 	}
 	return nil
+}
+
+// reconcileState performs the lazy liveness reconciliation mandated by
+// REQ-007 and REQ-009. If the stored state is StateRunning and the process is
+// no longer alive, the state is flipped to:
+//   - StateExited if the process exited with code 0 (clean exit), or if we
+//     cannot determine the exit code (no Cmd, no ProcessState — assume clean).
+//   - StateError if the process died from a signal or a non-zero exit code.
+//
+// If the process is still alive, or the state is already not StateRunning,
+// reconcileState is a no-op. It is safe to call concurrently and to call
+// repeatedly. It does not panic on nil Cmd or nil ProcessState.
+func (s *Session) reconcileState() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State != StateRunning {
+		return
+	}
+	if IsAlive(s.PID) {
+		return
+	}
+	s.State = classifyExit(s.Cmd)
+}
+
+// classifyExit decides StateExited vs StateError from the available process
+// state. When no information is available (nil Cmd or nil ProcessState) we
+// assume a clean exit: the process is dead and we have no evidence of a
+// signal/non-zero exit, so defaulting to StateExited is the least surprising
+// choice.
+func classifyExit(cmd *exec.Cmd) SessionState {
+	if cmd == nil || cmd.ProcessState == nil {
+		return StateExited
+	}
+	if cmd.ProcessState.Exited() && cmd.ProcessState.ExitCode() == 0 {
+		return StateExited
+	}
+	return StateError
 }
