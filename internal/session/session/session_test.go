@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/blak0p/relay-mcp/internal/session/liveness"
 )
 
 var sessionIDFormat = regexp.MustCompile(`^term_[0-9a-f]{16}$`)
@@ -136,7 +138,7 @@ func TestSession_ReconcileState_CleanExitFlipsToExited(t *testing.T) {
 	// Ensure the process is really gone before reconciling.
 	waitForDead(t, s.PID)
 
-	s.reconcileState()
+	s.ReconcileState()
 	if s.State != StateExited {
 		t.Fatalf("State = %q, want %q", s.State, StateExited)
 	}
@@ -157,7 +159,7 @@ func TestSession_ReconcileState_SignalExitFlipsToError(t *testing.T) {
 	s.PID = pid
 	waitForDead(t, pid)
 
-	s.reconcileState()
+	s.ReconcileState()
 	if s.State != StateError {
 		t.Fatalf("State = %q, want %q (signal exit)", s.State, StateError)
 	}
@@ -171,7 +173,7 @@ func TestSession_ReconcileState_IdempotentWhenNotRunning(t *testing.T) {
 	s.State = StateExited
 	waitForDead(t, s.PID)
 
-	s.reconcileState()
+	s.ReconcileState()
 	if s.State != StateExited {
 		t.Fatalf("State = %q, want %q (no flip from non-running)", s.State, StateExited)
 	}
@@ -184,7 +186,7 @@ func TestSession_ReconcileState_AliveStaysRunning(t *testing.T) {
 	s := New(cmd, nil)
 	s.PID = os.Getpid()
 
-	s.reconcileState()
+	s.ReconcileState()
 	if s.State != StateRunning {
 		t.Fatalf("State = %q, want %q (alive should stay running)", s.State, StateRunning)
 	}
@@ -195,7 +197,7 @@ func TestSession_ReconcileState_NilCmdNoPanic(t *testing.T) {
 	s := New(nil, nil)
 	s.PID = os.Getpid()
 	// Must not panic even with nil Cmd.
-	s.reconcileState()
+	s.ReconcileState()
 	if s.State != StateRunning {
 		t.Fatalf("State = %q, want %q", s.State, StateRunning)
 	}
@@ -204,10 +206,10 @@ func TestSession_ReconcileState_NilCmdNoPanic(t *testing.T) {
 func waitForDead(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && IsAlive(pid) {
+	for time.Now().Before(deadline) && liveness.IsAlive(pid) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if IsAlive(pid) {
+	if liveness.IsAlive(pid) {
 		t.Fatalf("pid %d still alive after 2s", pid)
 	}
 }

@@ -1,4 +1,8 @@
-package session
+// Package liveness owns the cheap process-existence check used by the session
+// lifecycle: IsAlive(pid) reports whether a process is still running using a
+// signal-0 ping (unix.Kill(pid, 0)). It performs no reaping and has no side
+// effects.
+package liveness
 
 import "golang.org/x/sys/unix"
 

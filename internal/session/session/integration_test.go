@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blak0p/relay-mcp/internal/session/liveness"
 	"github.com/creack/pty"
 )
 
@@ -42,7 +43,7 @@ func TestIntegration_BashSpawnSpawnsRunningPTY(t *testing.T) {
 	})
 
 	// The spawned process must be alive immediately.
-	if !IsAlive(cmd.Process.Pid) {
+	if !liveness.IsAlive(cmd.Process.Pid) {
 		t.Fatal("spawned bash is not alive immediately after StartWithSize")
 	}
 

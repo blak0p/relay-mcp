@@ -1,4 +1,4 @@
-package session
+package serror
 
 import (
 	"errors"

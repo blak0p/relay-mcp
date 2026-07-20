@@ -1,4 +1,4 @@
-package session
+package registry
 
 import (
 	"errors"
@@ -7,9 +7,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/blak0p/relay-mcp/internal/session/error"
+	"github.com/blak0p/relay-mcp/internal/session/liveness"
+	"github.com/blak0p/relay-mcp/internal/session/session"
 )
 
-func newTestSession(t *testing.T) *Session {
+func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 	cmd := exec.Command("true")
 	r, w, err := os.Pipe()
@@ -18,7 +23,7 @@ func newTestSession(t *testing.T) *Session {
 	}
 	defer r.Close()
 	t.Cleanup(func() { w.Close() })
-	return New(cmd, w)
+	return session.New(cmd, w)
 }
 
 func TestRegistry_PutThenGet(t *testing.T) {
@@ -42,7 +47,7 @@ func TestRegistry_GetEmptyReturnsErrSessionNotFound(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()
 	_, err := reg.Get()
-	if !errors.Is(err, ErrSessionNotFound) {
+	if !errors.Is(err, serror.ErrSessionNotFound) {
 		t.Fatalf("Get on empty registry = %v, want ErrSessionNotFound", err)
 	}
 }
@@ -57,7 +62,7 @@ func TestRegistry_PutDuplicateReturnsErrSessionAlreadyExists(t *testing.T) {
 		t.Fatalf("first Put = %v, want nil", err)
 	}
 	err := reg.Put(second)
-	if !errors.Is(err, ErrSessionAlreadyExists) {
+	if !errors.Is(err, serror.ErrSessionAlreadyExists) {
 		t.Fatalf("second Put = %v, want ErrSessionAlreadyExists", err)
 	}
 	// Verify the registry still holds the first session, not the second.
@@ -90,7 +95,7 @@ func TestRegistry_ConcurrentPutIsSafe(t *testing.T) {
 	for err := range errs {
 		if err == nil {
 			success++
-		} else if !errors.Is(err, ErrSessionAlreadyExists) {
+		} else if !errors.Is(err, serror.ErrSessionAlreadyExists) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
@@ -109,10 +114,10 @@ func TestRegistry_DuplicatePutIncludesExistingID(t *testing.T) {
 		t.Fatalf("first Put = %v, want nil", err)
 	}
 	err := reg.Put(second)
-	if !errors.Is(err, ErrSessionAlreadyExists) {
+	if !errors.Is(err, serror.ErrSessionAlreadyExists) {
 		t.Fatalf("second Put = %v, want ErrSessionAlreadyExists", err)
 	}
-	got := ExistingSessionID(err)
+	got := serror.ExistingSessionID(err)
 	if got != first.ID {
 		t.Fatalf("ExistingSessionID(err) = %q, want %q", got, first.ID)
 	}
@@ -124,20 +129,46 @@ func TestRegistry_DuplicatePutIncludesExistingID(t *testing.T) {
 
 func TestExistingSessionID_OnPlainError(t *testing.T) {
 	t.Parallel()
-	if got := ExistingSessionID(errors.New("plain error")); got != "" {
+	if got := serror.ExistingSessionID(errors.New("plain error")); got != "" {
 		t.Fatalf("ExistingSessionID on plain error = %q, want empty", got)
+	}
+}
+
+// finishedCmd runs cmd and waits for it so that cmd.ProcessState is populated
+// with the real exit code. Returns the cmd with ProcessState set.
+func finishedCmd(t *testing.T, name string, args ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	if err := cmd.Run(); err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			t.Fatalf("run %v: %v", cmd.Args, err)
+		}
+	}
+	if cmd.ProcessState == nil {
+		t.Fatalf("ProcessState nil for %v", cmd.Args)
+	}
+	return cmd
+}
+
+func waitForDead(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && liveness.IsAlive(pid) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if liveness.IsAlive(pid) {
+		t.Fatalf("pid %d still alive after 2s", pid)
 	}
 }
 
 func TestRegistry_Get_ReconcilesDeadProcessToExited(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()
-	// finishedCmd gives us a cmd with ProcessState populated (exit 0).
 	cmd := finishedCmd(t, "true")
 	r, w, _ := os.Pipe()
 	defer r.Close()
 	defer w.Close()
-	s := New(cmd, w)
+	s := session.New(cmd, w)
 	s.PID = cmd.Process.Pid
 	waitForDead(t, s.PID)
 
@@ -149,8 +180,8 @@ func TestRegistry_Get_ReconcilesDeadProcessToExited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get = %v, want nil", err)
 	}
-	if got.State != StateExited {
-		t.Fatalf("after Get, State = %q, want %q (liveness must reconcile)", got.State, StateExited)
+	if got.State != session.StateExited {
+		t.Fatalf("after Get, State = %q, want %q (liveness must reconcile)", got.State, session.StateExited)
 	}
 }
 
@@ -161,7 +192,7 @@ func TestRegistry_Get_LeavesAliveSessionRunning(t *testing.T) {
 	r, w, _ := os.Pipe()
 	defer r.Close()
 	defer w.Close()
-	s := New(cmd, w)
+	s := session.New(cmd, w)
 	s.PID = os.Getpid() // alive
 	if err := reg.Put(s); err != nil {
 		t.Fatalf("Put = %v, want nil", err)
@@ -170,7 +201,7 @@ func TestRegistry_Get_LeavesAliveSessionRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get = %v, want nil", err)
 	}
-	if got.State != StateRunning {
-		t.Fatalf("alive session State = %q, want %q", got.State, StateRunning)
+	if got.State != session.StateRunning {
+		t.Fatalf("alive session State = %q, want %q", got.State, session.StateRunning)
 	}
 }

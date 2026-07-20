@@ -1,6 +1,12 @@
-// Package session models a PTY-backed bash session: the core domain object of
-// relay-mcp. A Session owns the master end of a PTY and the handle to the
-// spawned bash process.
+// Package session owns the core domain types for a PTY-backed bash session:
+// the Session struct, its lifecycle (New, Close), the SessionState enum, and
+// the lazy liveness reconciliation performed on session access.
+//
+// This package does not speak MCP, does not own the registry, and does not
+// own the liveness primitive — those concerns live in sibling sub-packages
+// (registry, liveness) under the same session namespace. reconcileState and
+// classifyExit are methods of *Session and therefore live here, not in
+// liveness.
 package session
 
 import (
@@ -10,6 +16,7 @@ import (
 	"time"
 
 	"github.com/blak0p/relay-mcp/internal/idgen"
+	"github.com/blak0p/relay-mcp/internal/session/liveness"
 )
 
 // SessionState is the lifecycle state of a Session.
@@ -78,23 +85,27 @@ func (s *Session) Close() error {
 	return nil
 }
 
-// reconcileState performs the lazy liveness reconciliation mandated by
-// REQ-007 and REQ-009. If the stored state is StateRunning and the process is
+// ReconcileState performs the lazy liveness reconciliation mandated by the
+// session lifecycle. If the stored state is StateRunning and the process is
 // no longer alive, the state is flipped to:
 //   - StateExited if the process exited with code 0 (clean exit), or if we
 //     cannot determine the exit code (no Cmd, no ProcessState — assume clean).
 //   - StateError if the process died from a signal or a non-zero exit code.
 //
 // If the process is still alive, or the state is already not StateRunning,
-// reconcileState is a no-op. It is safe to call concurrently and to call
+// ReconcileState is a no-op. It is safe to call concurrently and to call
 // repeatedly. It does not panic on nil Cmd or nil ProcessState.
-func (s *Session) reconcileState() {
+//
+// ReconcileState is exported because sibling sub-packages under the session
+// namespace (notably registry) need to trigger reconciliation on Get; it is
+// not part of the external API of relay-mcp.
+func (s *Session) ReconcileState() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.State != StateRunning {
 		return
 	}
-	if IsAlive(s.PID) {
+	if liveness.IsAlive(s.PID) {
 		return
 	}
 	s.State = classifyExit(s.Cmd)

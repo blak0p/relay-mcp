@@ -1,8 +1,3 @@
-// Package idgen generates unique, unpredictable session identifiers for
-// terminal sessions.
-//
-// IDs use the "term_" prefix followed by 16 lowercase hex chars (8 bytes from
-// crypto/rand). Zero dependencies, stdlib only.
 package idgen
 
 import (
