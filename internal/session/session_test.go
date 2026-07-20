@@ -60,3 +60,51 @@ func TestNew_GeneratesUniqueID(t *testing.T) {
 		t.Fatalf("two sessions share id %q, want unique", s1.ID)
 	}
 }
+
+func TestSession_Close_ReleasesPTY(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("true")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+
+	s := New(cmd, w)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+
+	// Writing to a closed FD must fail.
+	if _, err := w.Write([]byte("x")); err == nil {
+		t.Fatal("write to closed PTY succeeded, want error")
+	}
+}
+
+func TestSession_Close_Idempotent(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("true")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+
+	s := New(cmd, w)
+	if err := s.Close(); err != nil {
+		t.Fatalf("first Close() = %v, want nil", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("second Close() = %v, want nil (idempotent)", err)
+	}
+}
+
+func TestSession_Close_NilPTY(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("true")
+	s := New(cmd, nil)
+	// Closing a session with nil PTY must not panic.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() on nil PTY = %v, want nil", err)
+	}
+}

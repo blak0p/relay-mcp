@@ -33,12 +33,13 @@ const (
 // Session represents one PTY-backed bash process.
 type Session struct {
 	ID        string
-	PTY       *os.File      // master end of the PTY
-	Cmd       *exec.Cmd     // bash process handle
+	PTY       *os.File  // master end of the PTY
+	Cmd       *exec.Cmd // bash process handle
 	StartedAt time.Time
 	State     SessionState
 
-	mu sync.Mutex // guards State
+	closed bool       // guards Close against double-close
+	mu     sync.Mutex // guards State and closed
 }
 
 // New constructs a Session from a started (or about-to-start) command and its
@@ -54,4 +55,24 @@ func New(cmd *exec.Cmd, pty *os.File) *Session {
 		StartedAt: time.Now(),
 		State:     StateRunning,
 	}
+}
+
+// closeClosed tracks whether Close has already run. Guarded by s.mu so
+// concurrent closes are safe.
+//
+// Close releases the PTY master file descriptor. It does NOT kill or wait on
+// the bash process — process teardown is the caller's responsibility (e.g.
+// creack/pty or the close_terminal handler). Close is idempotent: subsequent
+// calls return nil without touching the (already-closed) FD.
+func (s *Session) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	if s.PTY != nil {
+		return s.PTY.Close()
+	}
+	return nil
 }
