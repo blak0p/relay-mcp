@@ -1,12 +1,3 @@
-// Package serror owns the typed sentinel errors for the session lifecycle and
-// the helpers that carry the existing session id through ErrSessionAlreadyExists.
-//
-// The package name is intentionally "serror" (not "error") so it does not
-// collide with the builtin predeclared error type within its own files (the
-// existingSessionError wrapper references the builtin error in method
-// signatures). External callers import this package as
-// github.com/blak0p/relay-mcp/internal/session/error and refer to its exported
-// identifiers directly (ErrSessionAlreadyExists, ExistingSessionID, etc.).
 package serror
 
 import (
