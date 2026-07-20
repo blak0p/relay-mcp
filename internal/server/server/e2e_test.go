@@ -1,0 +1,309 @@
+package server
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+)
+
+// sessionIDFormat matches the id format produced by idgen.New (term_ + 16 hex).
+var sessionIDFormat = regexp.MustCompile(`^term_[0-9a-f]{16}$`)
+
+// jsonrpcMessage is a minimal JSON-RPC envelope used to read server responses.
+type jsonrpcMessage struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *jsonrpcError   `json:"error,omitempty"`
+}
+
+type jsonrpcError struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+// e2eProbe drives a compiled relay-mcp binary over stdio with raw JSON-RPC
+// frames so the test can assert on the exact wire format.
+type e2eProbe struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	out    *bufio.Reader
+}
+
+func newE2EProbe(t *testing.T) *e2eProbe {
+	t.Helper()
+	bin := buildBinary(t)
+	cmd := exec.Command(bin)
+	cmd.Env = append(os.Environ(), "RELAY_MCP_E2E=1")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	cmd.Stderr = &strings.Builder{}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start relay-mcp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+	})
+	return &e2eProbe{cmd: cmd, stdin: stdin, stdout: stdout, out: bufio.NewReader(stdout)}
+}
+
+func buildBinary(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "relay-mcp-test")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/relay-mcp")
+	// go build resolves ./cmd/relay-mcp relative to the module root; the test
+	// binary lives in internal/server/server, so walk up three parents to find
+	// the repo root. We detect it by looking for go.mod.
+	root := findModuleRoot(t)
+	build.Dir = root
+	build.Stderr = &strings.Builder{}
+	if err := build.Run(); err != nil {
+		t.Fatalf("go build ./cmd/relay-mcp: %v", err)
+	}
+	return bin
+}
+
+// findModuleRoot walks up from the current working directory until it finds a
+// go.mod file. This lets the E2E test build the relay-mcp binary regardless of
+// where `go test` was invoked from.
+func findModuleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	t.Fatalf("could not find go.mod walking up from %s", dir)
+	return ""
+}
+
+// send writes a JSON-RPC request line and reads the next response line.
+func (p *e2eProbe) send(t *testing.T, id int, method string, params any) *jsonrpcMessage {
+	t.Helper()
+	body := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  method,
+	}
+	if params != nil {
+		body["params"] = params
+	}
+	raw, _ := json.Marshal(body)
+	if _, err := fmt.Fprintln(p.stdin, string(raw)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	line, err := p.readLine(t)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var msg jsonrpcMessage
+	if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		t.Fatalf("unmarshal response %q: %v", line, err)
+	}
+	return &msg
+}
+
+// readLine reads one newline-terminated JSON object from stdout with a timeout.
+func (p *e2eProbe) readLine(t *testing.T) (string, error) {
+	t.Helper()
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := p.out.ReadString('\n')
+		ch <- result{strings.TrimSpace(line), err}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	select {
+	case r := <-ch:
+		if r.err != nil && r.err != io.EOF {
+			return "", r.err
+		}
+		return r.line, nil
+	case <-ctx.Done():
+		return "", fmt.Errorf("timeout waiting for server response")
+	}
+}
+
+func TestE2E_CreateTerminal_RoundTrip(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not in PATH; skipping E2E test")
+	}
+	probe := newE2EProbe(t)
+
+	// 1. initialize — the server must respond with its serverInfo.
+	initResp := probe.send(t, 1, "initialize", map[string]any{
+		"protocolVersion": "2025-11-25",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "e2e-test", "version": "0.0.1"},
+	})
+	if initResp.Error != nil {
+		t.Fatalf("initialize returned error: %+v", initResp.Error)
+	}
+	if initResp.Result == nil {
+		t.Fatal("initialize returned no result")
+	}
+
+	// 2. tools/call create_terminal — must return a running session with a
+	//    term_ + 16 hex id.
+	first := callCreateTerminal(t, probe, 2)
+	if !sessionIDFormat.MatchString(first.ID) {
+		t.Fatalf("first create_terminal id = %q, want match %s", first.ID, sessionIDFormat.String())
+	}
+	if first.State != "running" {
+		t.Fatalf("first create_terminal state = %q, want %q", first.State, "running")
+	}
+	if first.StartedAt == "" {
+		t.Fatal("first create_terminal started_at is empty")
+	}
+
+	// 3. tools/call create_terminal again — must fail with -32001 and the
+	//    existing session id in data.existing_id.
+	second := probe.send(t, 3, "tools/call", map[string]any{
+		"name":      "create_terminal",
+		"arguments": map[string]any{},
+	})
+	if second.Error == nil {
+		// mcp-go surfaces tool errors as CallToolResult{IsError:true} inside
+		// the result, not as a JSON-RPC error. Parse the result and inspect
+		// the text content for the error envelope.
+		if second.Result == nil {
+			t.Fatal("second create_terminal returned neither error nor result")
+		}
+		errEnv := parseToolErrorFromResult(t, second.Result)
+		if errEnv.Code != -32001 {
+			t.Fatalf("second create_terminal code = %d, want -32001", errEnv.Code)
+		}
+		var data struct {
+			ExistingID string `json:"existing_id"`
+		}
+		if err := json.Unmarshal(errEnv.Data, &data); err != nil {
+			t.Fatalf("unmarshal error data: %v", err)
+		}
+		if data.ExistingID != first.ID {
+			t.Fatalf("second create_terminal existing_id = %q, want %q", data.ExistingID, first.ID)
+		}
+	} else {
+		// Some versions of mcp-go may propagate tool errors as JSON-RPC errors.
+		if second.Error.Code != -32001 {
+			t.Fatalf("second create_terminal JSON-RPC code = %d, want -32001", second.Error.Code)
+		}
+		if !strings.Contains(second.Error.Message, first.ID) {
+			t.Fatalf("second create_terminal error message = %q, want it to contain %q", second.Error.Message, first.ID)
+		}
+	}
+}
+
+// createTerminalResult is the success payload of create_terminal.
+type createTerminalResult struct {
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	StartedAt string `json:"started_at"`
+}
+
+func callCreateTerminal(t *testing.T, probe *e2eProbe, id int) createTerminalResult {
+	t.Helper()
+	resp := probe.send(t, id, "tools/call", map[string]any{
+		"name":      "create_terminal",
+		"arguments": map[string]any{},
+	})
+	if resp.Error != nil {
+		t.Fatalf("create_terminal (id=%d) returned JSON-RPC error: %+v", id, resp.Error)
+	}
+	if resp.Result == nil {
+		t.Fatalf("create_terminal (id=%d) returned no result", id)
+	}
+	return parseToolResultFromResult(t, resp.Result)
+}
+
+// parseToolResultFromResult extracts the JSON success payload from a
+// CallToolResult's text content field.
+func parseToolResultFromResult(t *testing.T, raw json.RawMessage) createTerminalResult {
+	t.Helper()
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		t.Fatalf("unmarshal CallToolResult: %v (raw=%s)", err, raw)
+	}
+	if wrapper.IsError {
+		t.Fatalf("CallToolResult.IsError = true; content=%v", wrapper.Content)
+	}
+	if len(wrapper.Content) == 0 || wrapper.Content[0].Type != "text" {
+		t.Fatalf("unexpected content shape: %+v", wrapper.Content)
+	}
+	var out createTerminalResult
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &out); err != nil {
+		t.Fatalf("unmarshal create_terminal payload %q: %v", wrapper.Content[0].Text, err)
+	}
+	return out
+}
+
+// parseToolErrorFromResult extracts the {code, message, data} error envelope
+// from an errored CallToolResult's text content.
+func parseToolErrorFromResult(t *testing.T, raw json.RawMessage) jsonrpcError {
+	t.Helper()
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		t.Fatalf("unmarshal CallToolResult: %v (raw=%s)", err, raw)
+	}
+	if !wrapper.IsError {
+		t.Fatalf("CallToolResult.IsError = false, want true; content=%v", wrapper.Content)
+	}
+	if len(wrapper.Content) == 0 || wrapper.Content[0].Type != "text" {
+		t.Fatalf("unexpected content shape: %+v", wrapper.Content)
+	}
+	var env jsonrpcError
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &env); err != nil {
+		t.Fatalf("unmarshal error envelope %q: %v", wrapper.Content[0].Text, err)
+	}
+	return env
+}
