@@ -128,3 +128,49 @@ func TestExistingSessionID_OnPlainError(t *testing.T) {
 		t.Fatalf("ExistingSessionID on plain error = %q, want empty", got)
 	}
 }
+
+func TestRegistry_Get_ReconcilesDeadProcessToExited(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	// finishedCmd gives us a cmd with ProcessState populated (exit 0).
+	cmd := finishedCmd(t, "true")
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	s := New(cmd, w)
+	s.PID = cmd.Process.Pid
+	waitForDead(t, s.PID)
+
+	if err := reg.Put(s); err != nil {
+		t.Fatalf("Put = %v, want nil", err)
+	}
+
+	got, err := reg.Get()
+	if err != nil {
+		t.Fatalf("Get = %v, want nil", err)
+	}
+	if got.State != StateExited {
+		t.Fatalf("after Get, State = %q, want %q (liveness must reconcile)", got.State, StateExited)
+	}
+}
+
+func TestRegistry_Get_LeavesAliveSessionRunning(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	cmd := exec.Command("true")
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	s := New(cmd, w)
+	s.PID = os.Getpid() // alive
+	if err := reg.Put(s); err != nil {
+		t.Fatalf("Put = %v, want nil", err)
+	}
+	got, err := reg.Get()
+	if err != nil {
+		t.Fatalf("Get = %v, want nil", err)
+	}
+	if got.State != StateRunning {
+		t.Fatalf("alive session State = %q, want %q", got.State, StateRunning)
+	}
+}

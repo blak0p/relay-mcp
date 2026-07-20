@@ -30,12 +30,16 @@ func (r *Registry) Put(session *Session) error {
 	return nil
 }
 
-// Get returns the active session, or ErrSessionNotFound if none is registered.
+// Get returns the active session after running lazy liveness reconciliation
+// (REQ-009): if the stored state is StateRunning but the process is dead,
+// the state is flipped to StateExited/StateError before returning. Returns
+// ErrSessionNotFound if no session is registered.
 func (r *Registry) Get() (*Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.current == nil {
 		return nil, ErrSessionNotFound
 	}
+	r.current.reconcileState()
 	return r.current, nil
 }
