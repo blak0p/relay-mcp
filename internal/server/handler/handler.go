@@ -138,6 +138,9 @@ func handleCreateTerminal(ctx context.Context, reg *registry.Registry, spawn Spa
 	if startedCmd.Process != nil {
 		s.PID = startedCmd.Process.Pid
 	}
+	// Session owns the only PTY reader. Start it before publication so every
+	// consumer observes the same retained stream from the first available byte.
+	s.StartOutput()
 	if err := reg.Put(s); err != nil {
 		// Put can only fail with ErrSessionAlreadyExists (a race between the
 		// Get check above and another goroutine's call). Close the PTY we just

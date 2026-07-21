@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -13,12 +14,62 @@ import (
 
 	"github.com/blak0p/relay-mcp/internal/session/error"
 	"github.com/blak0p/relay-mcp/internal/session/liveness"
+	"github.com/blak0p/relay-mcp/internal/session/output"
 	"github.com/blak0p/relay-mcp/internal/session/registry"
 	"github.com/blak0p/relay-mcp/internal/session/session"
+	"github.com/creack/pty"
 )
 
 // sessionIDFormat matches the id format produced by idgen.New (term_ + 16 hex).
 var sessionIDFormat = regexp.MustCompile(`^term_[0-9a-f]{16}$`)
+
+func TestCreateTerminal_StartsOutputReaderBeforeReturning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires a real PTY")
+	}
+
+	for _, tt := range []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{name: "clean exit", script: "printf created", want: "created"},
+		{name: "error exit", script: "printf failed; exit 1", want: "failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := registry.NewRegistry()
+			create := New(reg, WithSpawner(func(_ *exec.Cmd) (*os.File, *exec.Cmd, error) {
+				cmd := exec.Command("bash", "-c", tt.script)
+				ptyFile, err := pty.Start(cmd)
+				return ptyFile, cmd, err
+			}))
+
+			result, err := create(context.Background(), mcp.CallToolRequest{})
+			if err != nil {
+				t.Fatalf("create terminal: %v", err)
+			}
+			if result.IsError {
+				t.Fatalf("create terminal returned tool error: %v", result.Content)
+			}
+
+			s, err := reg.Get()
+			if err != nil {
+				t.Fatalf("registry.Get: %v", err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			snapshot, err := s.Output.Snapshot(ctx, 0, output.MaxReadBytes, time.Second)
+			if err != nil {
+				t.Fatalf("output snapshot: %v", err)
+			}
+			if !strings.Contains(string(snapshot.Output), tt.want) {
+				t.Fatalf("retained output = %q, want %q", snapshot.Output, tt.want)
+			}
+		})
+	}
+}
 
 // errorPayload is the JSON shape the handler writes into CallToolResult.Content
 // for tool-level errors. It preserves the JSON-RPC-style code/message/data

@@ -1,16 +1,20 @@
 package session
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/blak0p/relay-mcp/internal/idgen"
-	"github.com/blak0p/relay-mcp/internal/session/liveness"
 	serror "github.com/blak0p/relay-mcp/internal/session/error"
+	"github.com/blak0p/relay-mcp/internal/session/liveness"
+	"github.com/blak0p/relay-mcp/internal/session/output"
 )
 
 // MaxWriteBytes is the maximum number of bytes accepted in a single Write
@@ -50,12 +54,17 @@ type Session struct {
 	PID       int       // cached for liveness checks
 	StartedAt time.Time
 	State     SessionState
+	// Output retains terminal bytes for future read_terminal consumers. Exactly
+	// one reader appends to it for the lifetime of the session.
+	Output *output.Broker
 
 	closed atomic.Bool // guards Close against double-close; atomic for lock-free reads from Write
 	mu     sync.Mutex  // guards State and the double-close idempotency check in Close
 
 	writeMu    sync.Mutex // serializes concurrent Write calls so byte streams do not interleave in the PTY (REQ-WT-005)
 	ptyWriter  ptyWriter  // write target; defaults to PTY. Overridden only by tests via setPtyWriterForTest.
+	outputOnce sync.Once  // ensures no consumer competes with the PTY output reader
+	outputDone chan struct{}
 }
 
 // New constructs a Session from a started (or about-to-start) command and its
@@ -65,13 +74,80 @@ type Session struct {
 // handler).
 func New(cmd *exec.Cmd, pty *os.File) *Session {
 	return &Session{
-		ID:        idgen.New(),
-		PTY:       pty,
-		Cmd:       cmd,
-		StartedAt: time.Now(),
-		State:     StateRunning,
-		ptyWriter: pty, // default write target is the real PTY; tests override via setPtyWriterForTest
+		ID:         idgen.New(),
+		PTY:        pty,
+		Cmd:        cmd,
+		StartedAt:  time.Now(),
+		State:      StateRunning,
+		Output:     output.New(output.DefaultCapacity),
+		ptyWriter:  pty, // default write target is the real PTY; tests override via setPtyWriterForTest
+		outputDone: make(chan struct{}),
 	}
+}
+
+// StartOutput begins the session's sole PTY reader. It is safe to call more
+// than once; only the first call starts a goroutine so output is never split
+// between competing consumers.
+func (s *Session) StartOutput() {
+	s.outputOnce.Do(func() {
+		go s.readOutput()
+	})
+}
+
+func (s *Session) readOutput() {
+	defer close(s.outputDone)
+	if s.PTY == nil {
+		s.finishOutput(output.StatusError, StateError)
+		return
+	}
+
+	buffer := make([]byte, output.DefaultReadBytes)
+	for {
+		n, err := s.PTY.Read(buffer)
+		if n > 0 {
+			s.Output.Append(buffer[:n])
+		}
+		if err == nil {
+			continue
+		}
+		if s.closed.Load() {
+			return
+		}
+		if isTerminalReadEnd(err) {
+			s.finishOutputAfterExit()
+			return
+		}
+		s.finishOutput(output.StatusError, StateError)
+		return
+	}
+}
+
+func isTerminalReadEnd(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, syscall.EIO)
+}
+
+func (s *Session) finishOutputAfterExit() {
+	state := StateExited
+	if s.Cmd != nil && s.Cmd.Process != nil {
+		if err := s.Cmd.Wait(); err != nil {
+			state = StateError
+		}
+	}
+	if state == StateExited {
+		s.finishOutput(output.StatusExited, state)
+		return
+	}
+	s.finishOutput(output.StatusError, state)
+}
+
+func (s *Session) finishOutput(status output.Status, state SessionState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed.Load() {
+		return
+	}
+	s.State = state
+	s.Output.SetStatus(status)
 }
 
 // closeClosed tracks whether Close has already run. The flag is an
@@ -90,6 +166,9 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closed.Store(true)
+	if s.Output != nil {
+		s.Output.SetStatus(output.StatusClosed)
+	}
 	if s.PTY != nil {
 		return s.PTY.Close()
 	}
