@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"sync"
@@ -9,7 +10,19 @@ import (
 
 	"github.com/blak0p/relay-mcp/internal/idgen"
 	"github.com/blak0p/relay-mcp/internal/session/liveness"
+	serror "github.com/blak0p/relay-mcp/internal/session/error"
 )
+
+// MaxWriteBytes is the maximum number of bytes accepted in a single Write
+// call. The cap is a hard rejection (REQ-WT-003), not a chunking primitive.
+const MaxWriteBytes = 1 << 20 // 1 MiB
+
+// ptyWriter is the write surface of the PTY master. *os.File satisfies it.
+// It exists as an interface so tests can inject a stub (partial writes,
+// blocking writes) without touching the real FD.
+type ptyWriter interface {
+	Write([]byte) (int, error)
+}
 
 // SessionState is the lifecycle state of a Session.
 type SessionState string
@@ -40,6 +53,9 @@ type Session struct {
 
 	closed atomic.Bool // guards Close against double-close; atomic for lock-free reads from Write
 	mu     sync.Mutex  // guards State and the double-close idempotency check in Close
+
+	writeMu    sync.Mutex // serializes concurrent Write calls so byte streams do not interleave in the PTY (REQ-WT-005)
+	ptyWriter  ptyWriter  // write target; defaults to PTY. Overridden only by tests via setPtyWriterForTest.
 }
 
 // New constructs a Session from a started (or about-to-start) command and its
@@ -54,6 +70,7 @@ func New(cmd *exec.Cmd, pty *os.File) *Session {
 		Cmd:       cmd,
 		StartedAt: time.Now(),
 		State:     StateRunning,
+		ptyWriter: pty, // default write target is the real PTY; tests override via setPtyWriterForTest
 	}
 }
 
@@ -118,4 +135,50 @@ func classifyExit(cmd *exec.Cmd) SessionState {
 		return StateExited
 	}
 	return StateError
+}
+
+// Write injects raw bytes into the session's PTY master. It is safe for
+// concurrent use: writes to the same session are serialized via writeMu so
+// their byte streams do not interleave in the PTY (REQ-WT-005).
+//
+// Write rejects data larger than MaxWriteBytes with ErrWriteTooLarge before
+// acquiring any lock (REQ-WT-003). Under writeMu it re-checks the closed flag
+// and returns ErrSessionClosed if Close has been called (REQ-WT-006). It then
+// performs the PTY write and returns the byte count the kernel accepted.
+//
+// Partial writes (n < len(data), err == nil) are NOT retried: the caller is
+// responsible for resending the remainder (REQ-WT-004).
+func (s *Session) Write(data []byte) (int, error) {
+	if len(data) > MaxWriteBytes {
+		return 0, fmt.Errorf("%w: %d > %d", serror.ErrWriteTooLarge, len(data), MaxWriteBytes)
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.closed.Load() {
+		return 0, serror.ErrSessionClosed
+	}
+	// Liveness gate: if the underlying bash process is dead, flip the
+	// state to StateError and refuse the write. This is the lazy
+	// reconciliation path for write_terminal (REQ-WT-002). The race window
+	// between this check and the PTY write is acceptable and documented —
+	// the kernel will reject a write to a stale FD and the handler surfaces
+	// the I/O error.
+	if !liveness.IsAlive(s.PID) {
+		s.mu.Lock()
+		s.State = StateError
+		s.mu.Unlock()
+		return 0, fmt.Errorf("%w: session %s is not alive", serror.ErrSessionNotAlive, s.ID)
+	}
+	if s.ptyWriter == nil {
+		return 0, fmt.Errorf("%w: PTY writer not configured", serror.ErrSessionClosed)
+	}
+	return s.ptyWriter.Write(data)
+}
+
+// setPtyWriterForTest replaces the PTY write target with a test stub. It is
+// only safe to call before any concurrent Write; it exists to let tests
+// inject a controllable writer (partial writes, blocking writes) without
+// touching the real PTY FD. Test-only hook.
+func (s *Session) setPtyWriterForTest(w ptyWriter) {
+	s.ptyWriter = w
 }
