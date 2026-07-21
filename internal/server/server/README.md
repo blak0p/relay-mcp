@@ -12,7 +12,7 @@ session core (`internal/session/...`) and the MCP protocol layer.
 |-------------------|---------------------------------|-------------------------------|-----------|
 | `create_terminal` | `description.CreateTerminalName`| `handler.New(reg)`             | v1        |
 | `write_terminal`  | `description.WriteTerminalName`| `handler.NewWriteTerminalHandler(reg)` | v1 |
-| `read_terminal`   | (future)                        | (future)                      | planned   |
+| `read_terminal`   | `description.ReadTerminalName` | `handler.NewReadTerminalHandler(reg)` | v1 |
 | `send_control`    | (future)                        | (future)                      | planned   |
 | `close_terminal`  | (future)                        | (future)                      | planned   |
 
