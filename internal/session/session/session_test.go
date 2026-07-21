@@ -482,4 +482,136 @@ func (p *partialStub) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-// --- T-WT-06: concurrent writes (RED tests added below) ---
+// --- T-WT-06: concurrent writes serialization ---
+
+// TestWrite_ConcurrentWritesSerialize proves writeMu serializes concurrent
+// writes so their byte streams do not interleave in the PTY (REQ-WT-005).
+// 10 goroutines each write a 100-byte payload with a distinct 2-byte prefix
+// followed by 98 bytes of padding unique to that goroutine. After all
+// complete, the bash output is read and we assert:
+//   - the total payload bytes match 10*100
+//   - each prefix P0..P9 appears exactly once
+//   - no interleaving: the bytes between any two prefixes are the padding
+//     of exactly one goroutine (the block is contiguous).
+func TestWrite_ConcurrentWritesSerialize(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash available; skipping PTY integration test")
+	}
+
+	// Use a non-interactive bash that reads stdin verbatim and echoes it.
+	// `cat` inside bash gives us a clean byte pipe with no prompt noise.
+	cmd := exec.Command(bash, "--norc", "-c", "cat")
+	ws := &pty.Winsize{Rows: 30, Cols: 100}
+	ptyFile, err := pty.StartWithSize(cmd, ws)
+	if err != nil {
+		t.Fatalf("pty.StartWithSize: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ptyFile.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+
+	s := New(cmd, ptyFile)
+	s.PID = cmd.Process.Pid
+
+	const goroutines = 10
+	const payloadLen = 100
+
+	// Build 10 distinct payloads: "P<i>" + 98 bytes of padding unique per
+	// goroutine (a repeated byte distinct from all other goroutines' bytes).
+	payloads := make([][]byte, goroutines)
+	for i := 0; i < goroutines; i++ {
+		p := make([]byte, payloadLen)
+		p[0] = 'P'
+		p[1] = byte('0' + i) // P0..P9
+		pad := byte('a' + i) // a..j — distinct per goroutine
+		for j := 2; j < payloadLen; j++ {
+			p[j] = pad
+		}
+		payloads[i] = p
+	}
+
+	// Background reader collects everything cat echoes back. Read in a
+	// goroutine until we have at least goroutines*payloadLen bytes; the main
+	// goroutine fires the concurrent writes, then collects the output.
+	outCh := make(chan []byte, 1)
+	go func() {
+		var buf bytes.Buffer
+		tmp := make([]byte, 4096)
+		for buf.Len() < goroutines*payloadLen {
+			n, err := ptyFile.Read(tmp)
+			if n > 0 {
+				buf.Write(tmp[:n])
+			}
+			if err != nil {
+				break
+			}
+		}
+		outCh <- buf.Bytes()
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			n, err := s.Write(payloads[i])
+			if err != nil {
+				t.Errorf("goroutine %d Write: %v", i, err)
+				return
+			}
+			if n != payloadLen {
+				t.Errorf("goroutine %d n = %d, want %d", i, n, payloadLen)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	var out []byte
+	select {
+	case out = <-outCh:
+	case <-time.After(3 * time.Second):
+		_ = ptyFile.Close() // unblock the reader
+		out = <-outCh
+	}
+
+	// Close the PTY so `cat` exits (cleanup will also kill it).
+	_ = ptyFile.Close()
+
+	// The PTY echoes input by default in raw mode; with `cat` the output is
+	// the concatenation of the 10 payloads in some order. Extract the 10
+	// blocks by scanning for "P<i>" prefixes and asserting the 98 bytes
+	// that follow are the matching padding.
+	if len(out) < goroutines*payloadLen {
+		t.Fatalf("output len = %d, want >= %d (10*100); got:\n%q", len(out), goroutines*payloadLen, out)
+	}
+
+	// Count occurrences of each prefix and verify contiguity.
+	for i := 0; i < goroutines; i++ {
+		prefix := []byte{'P', byte('0' + i)}
+		pad := byte('a' + i)
+		count := bytes.Count(out, prefix)
+		if count != 1 {
+			t.Fatalf("prefix P%d appeared %d time(s), want exactly 1; got:\n%q", i, count, out)
+		}
+		// Find the prefix and assert the next 98 bytes are all the padding.
+		idx := bytes.Index(out, prefix)
+		block := out[idx : idx+payloadLen]
+		for j, b := range block {
+			if j < 2 {
+				continue
+			}
+			if b != pad {
+				t.Fatalf("goroutine %d block has interleaved byte at offset %d: got %q, want %q; block=%q full=%q",
+					i, j, b, pad, block, out)
+			}
+		}
+	}
+}
