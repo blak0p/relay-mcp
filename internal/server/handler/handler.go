@@ -27,6 +27,19 @@ const (
 	codeSpawnFailed          = -32003
 )
 
+// JSON-RPC-style error codes for write_terminal failures. ErrSessionNotFound
+// keeps -32004 (the pre-existing code mapped to it for create_terminal's
+// lookup failures); the new write sentinels take -32005..-32007 to avoid
+// breaking any caller branching on the existing code. The full mapping is
+// documented in internal/session/error/README.md.
+const (
+	codeSessionNotFound = -32004 // ErrSessionNotFound (write_terminal context, but same code as create_terminal's lookup failures)
+	codeSessionNotAlive = -32005 // ErrSessionNotAlive
+	codeWriteTooLarge   = -32006 // ErrWriteTooLarge
+	codeSessionClosed   = -32007 // ErrSessionClosed
+	codeInvalidArgument = -32602 // JSON-RPC invalid params (missing/wrong-typed data argument)
+)
+
 // PTY window size for spawned sessions. Fixed at 100x30 per the design; not
 // configurable per call in v1.
 const (
@@ -157,11 +170,13 @@ func defaultSpawner(cmd *exec.Cmd) (*os.File, *exec.Cmd, error) {
 	return f, cmd, nil
 }
 
-// successResult marshals out into a successful CallToolResult.
-func successResult(out CreateTerminalResult) *mcp.CallToolResult {
+// successResult marshals out into a successful CallToolResult. out may be a
+// CreateTerminalResult or a WriteTerminalResult — both are JSON-marshallable
+// structs with the shape the client expects in the text content.
+func successResult(out any) *mcp.CallToolResult {
 	body, err := json.Marshal(out)
 	if err != nil {
-		// Should never happen for our struct; fall back to a generic error.
+		// Should never happen for our structs; fall back to a generic error.
 		return errorResult(codeSpawnFailed, fmt.Sprintf("marshal result: %v", err), nil)
 	}
 	return &mcp.CallToolResult{
@@ -184,3 +199,98 @@ func errorResult(code int, msg string, data map[string]any) *mcp.CallToolResult 
 // the handler does not re-declare the tool name, the server package uses it
 // when registering the tool. Kept here as a compile-time link.
 var _ = description.CreateTerminalName
+
+// WriteTerminalResult is the success payload returned by the write_terminal
+// tool. It is JSON-marshalled into the CallToolResult text content.
+type WriteTerminalResult struct {
+	BytesWritten int    `json:"bytes_written"`
+	State        string `json:"state"`
+}
+
+// NewWriteTerminalHandler returns the write_terminal tool handler. reg must be
+// non-nil; the same registry instance must be shared with create_terminal's
+// handler (single-session invariant). The handler is safe for concurrent use
+// as long as reg is.
+//
+// The handler extracts the "data" string argument from the request, looks up
+// the active session via reg.Get, delegates to session.Write, and maps typed
+// errors from serror to the stable JSON-RPC-style error codes defined above.
+func NewWriteTerminalHandler(reg *registry.Registry) func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if reg == nil {
+		panic("handler: NewWriteTerminalHandler requires a non-nil registry")
+	}
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return handleWriteTerminal(ctx, reg, req)
+	}
+}
+
+// handleWriteTerminal is the core of the write_terminal tool, split out of the
+// closure so it can be unit-tested directly if needed.
+func handleWriteTerminal(ctx context.Context, reg *registry.Registry, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// 1. Extract the "data" argument. RequireString returns an error if the
+	//    key is missing or the value is not a string.
+	data, err := req.RequireString("data")
+	if err != nil {
+		return errorResult(codeInvalidArgument,
+			fmt.Sprintf("missing or invalid 'data' argument: %v", err),
+			nil,
+		), nil
+	}
+
+	// 2. Look up the active session. ErrSessionNotFound → codeSessionNotFound.
+	s, err := reg.Get()
+	if err != nil {
+		if errors.Is(err, serror.ErrSessionNotFound) {
+			return errorResult(codeSessionNotFound,
+				"no active session; call create_terminal first",
+				nil,
+			), nil
+		}
+		// Unexpected registry error — surface as a generic tool error.
+		return errorResult(codeSpawnFailed, fmt.Sprintf("registry unavailable: %v", err), nil), nil
+	}
+
+	// 3. Delegate to Session.Write and map the typed error to a stable code.
+	n, werr := s.Write([]byte(data))
+	if werr != nil {
+		return mapWriteError(werr, s.ID), nil
+	}
+
+	// 4. Success. Read the reconciled state under the session's mutex so the
+	//    response reflects the state after the write.
+	s.ReconcileState()
+	return successResult(WriteTerminalResult{
+		BytesWritten: n,
+		State:        string(s.State),
+	}), nil
+}
+
+// mapWriteError converts a session.Write error to a CallToolResult carrying
+// the stable code for the matched sentinel. Unrecognized errors fall through
+// to the generic spawn_failed code so the client always sees a structured
+// response.
+func mapWriteError(err error, sessionID string) *mcp.CallToolResult {
+	switch {
+	case errors.Is(err, serror.ErrSessionNotAlive):
+		return errorResult(codeSessionNotAlive,
+			fmt.Sprintf("session %s is not alive: %v", sessionID, err),
+			map[string]any{"session_id": sessionID},
+		)
+	case errors.Is(err, serror.ErrWriteTooLarge):
+		return errorResult(codeWriteTooLarge,
+			fmt.Sprintf("write exceeds maximum size: %v (limit %d bytes)", err, session.MaxWriteBytes),
+			map[string]any{"limit": session.MaxWriteBytes},
+		)
+	case errors.Is(err, serror.ErrSessionClosed):
+		return errorResult(codeSessionClosed,
+			fmt.Sprintf("session %s is closed: %v", sessionID, err),
+			map[string]any{"session_id": sessionID},
+		)
+	default:
+		// Generic fallback — surface the underlying error text.
+		return errorResult(codeSpawnFailed,
+			fmt.Sprintf("write to session %s failed: %v", sessionID, err),
+			map[string]any{"session_id": sessionID},
+		)
+	}
+}

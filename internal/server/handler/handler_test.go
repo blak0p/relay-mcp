@@ -196,6 +196,131 @@ func TestCreateTerminalHandler_BashNotFound(t *testing.T) {
 	}
 }
 
+// --- T-WT-08: writeTerminalHandler success path ---
+
+// writeTerminalResultPayload is the JSON shape of a successful write_terminal
+// result: {bytes_written, state}.
+type writeTerminalResultPayload struct {
+	BytesWritten int    `json:"bytes_written"`
+	State        string `json:"state"`
+}
+
+// extractWriteResult parses the JSON text content of a successful
+// write_terminal CallToolResult.
+func extractWriteResult(t *testing.T, res *mcp.CallToolResult) writeTerminalResultPayload {
+	t.Helper()
+	if res == nil {
+		t.Fatal("result is nil")
+	}
+	if res.IsError {
+		t.Fatalf("result.IsError = true, want false; content=%v", res.Content)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("result.Content is empty")
+	}
+	tc, ok := res.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("content[0] = %T, want mcp.TextContent", res.Content[0])
+	}
+	out, err := parseJSON[writeTerminalResultPayload](tc.Text)
+	if err != nil {
+		t.Fatalf("parse write_terminal result: %v (raw=%q)", err, tc.Text)
+	}
+	return out
+}
+
+// newWriteRequest builds a CallToolRequest with the given data argument.
+func newWriteRequest(data string) mcp.CallToolRequest {
+	return mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "write_terminal",
+			Arguments: map[string]any{"data": data},
+		},
+	}
+}
+
+// seedLiveSession spawns a real bash PTY, registers it in reg, and returns the
+// session plus a cleanup func. Used by write_terminal handler tests that need
+// a genuinely alive session exercising the real Session.Write path.
+func seedLiveSession(t *testing.T, reg *registry.Registry) *session.Session {
+	t.Helper()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not in PATH; skipping write_terminal handler test")
+	}
+	cmd := exec.Command("bash", "--norc", "-i")
+	ptyFile, _, err := defaultSpawner(cmd)
+	if err != nil {
+		t.Fatalf("defaultSpawner: %v", err)
+	}
+	s := session.New(cmd, ptyFile)
+	if cmd.Process != nil {
+		s.PID = cmd.Process.Pid
+	}
+	if err := reg.Put(s); err != nil {
+		_ = ptyFile.Close()
+		t.Fatalf("reg.Put: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = s.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	return s
+}
+
+// TestWriteTerminalHandler_Success proves the happy path: with a live session
+// registered, calling write_terminal with data "hello" returns
+// {bytes_written: 5, state: "running"} and no error. REQ-WT-001, REQ-WT-009.
+func TestWriteTerminalHandler_Success(t *testing.T) {
+	t.Parallel()
+	reg := registry.NewRegistry()
+	s := seedLiveSession(t, reg)
+	h := NewWriteTerminalHandler(reg)
+
+	res, err := h(context.Background(), newWriteRequest("hello"))
+	if err != nil {
+		t.Fatalf("handler returned Go error: %v; want nil (tool errors go in IsError)", err)
+	}
+	out := extractWriteResult(t, res)
+	if out.BytesWritten != 5 {
+		t.Fatalf("bytes_written = %d, want 5 (len(\"hello\"))", out.BytesWritten)
+	}
+	if out.State != string(session.StateRunning) {
+		t.Fatalf("state = %q, want %q", out.State, session.StateRunning)
+	}
+	// Best-effort: confirm the session is still registered and the same one.
+	got, gerr := reg.Get()
+	if gerr != nil {
+		t.Fatalf("reg.Get after write: %v", gerr)
+	}
+	if got.ID != s.ID {
+		t.Fatalf("registry session id = %q, want %q", got.ID, s.ID)
+	}
+}
+
+// TestWriteTerminalHandler_MissingSession proves the empty-registry path: with
+// no session registered, the handler returns an error envelope with
+// codeSessionNotFound (-32004) and the message is non-empty. REQ-WT-002.
+func TestWriteTerminalHandler_MissingSession(t *testing.T) {
+	t.Parallel()
+	reg := registry.NewRegistry()
+	h := NewWriteTerminalHandler(reg)
+
+	res, err := h(context.Background(), newWriteRequest("hi"))
+	if err != nil {
+		t.Fatalf("handler returned Go error: %v; want nil (tool errors go in IsError)", err)
+	}
+	e := extractError(t, res)
+	if e.Code != codeSessionNotFound {
+		t.Fatalf("error code = %d, want %d (codeSessionNotFound)", e.Code, codeSessionNotFound)
+	}
+	if e.Message == "" {
+		t.Fatal("error message is empty, want a non-empty message")
+	}
+}
+
 func TestCreateTerminalHandler_SpawnFailed(t *testing.T) {
 	t.Parallel()
 	// Use a real, discoverable shell but force the spawn to fail by pointing
