@@ -11,27 +11,20 @@ import (
 	"github.com/blak0p/relay-mcp/internal/session/registry"
 )
 
-// ServerName is the MCP server implementation name advertised in the
-// initialize response. It identifies the product to MCP clients.
-const ServerName = "relay-mcp"
-
-// ServerVersion is the advertised MCP server version. v1 reports a static
-// "0.1.0"; a future release will wire this to a build-time variable.
-const ServerVersion = "0.1.0"
-
 // NewServer builds a *mcpserver.MCPServer with every available terminal tool
 // registered. reg must be non-nil; the same registry instance must be shared
 // with every handler (single-session invariant).
 //
-// The tool is registered with the name/summary/description sourced from the
-// description package (REQ-008: single source of truth for tool metadata),
-// and the handler built by handler.New(reg).
+// All tool metadata (name, summary, description) and server metadata (name,
+// version, instructions) are sourced from the description package
+// (REQ-008: single source of truth).
 func NewServer(reg *registry.Registry) (*mcpserver.MCPServer, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("server: NewServer requires a non-nil registry")
 	}
-	s := mcpserver.NewMCPServer(ServerName, ServerVersion,
+	s := mcpserver.NewMCPServer(description.ServerName, description.ServerVersion,
 		mcpserver.WithToolCapabilities(false),
+		mcpserver.WithInstructions(description.ServerInstructions),
 	)
 
 	tool := mcp.NewTool(
