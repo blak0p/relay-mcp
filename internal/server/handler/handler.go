@@ -278,8 +278,8 @@ func mapWriteError(err error, sessionID string) *mcp.CallToolResult {
 		)
 	case errors.Is(err, serror.ErrWriteTooLarge):
 		return errorResult(codeWriteTooLarge,
-			fmt.Sprintf("write exceeds maximum size: %v (limit %d bytes)", err, session.MaxWriteBytes),
-			map[string]any{"limit": session.MaxWriteBytes},
+			fmt.Sprintf("write to session %s exceeds maximum size: %v (limit %d bytes)", sessionID, err, session.MaxWriteBytes),
+			map[string]any{"session_id": sessionID, "limit": session.MaxWriteBytes},
 		)
 	case errors.Is(err, serror.ErrSessionClosed):
 		return errorResult(codeSessionClosed,

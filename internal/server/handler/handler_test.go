@@ -7,10 +7,12 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/blak0p/relay-mcp/internal/session/error"
+	"github.com/blak0p/relay-mcp/internal/session/liveness"
 	"github.com/blak0p/relay-mcp/internal/session/registry"
 	"github.com/blak0p/relay-mcp/internal/session/session"
 )
@@ -318,6 +320,137 @@ func TestWriteTerminalHandler_MissingSession(t *testing.T) {
 	}
 	if e.Message == "" {
 		t.Fatal("error message is empty, want a non-empty message")
+	}
+}
+
+// --- T-WT-09: error mapping to stable codes ---
+
+// TestWriteTerminalHandler_MissingData proves the invalid-argument path: with
+// no "data" argument, the handler returns codeInvalidArgument (-32602).
+// REQ-WT-008 (parameter schema) + the design's error mapping table.
+func TestWriteTerminalHandler_MissingData(t *testing.T) {
+	t.Parallel()
+	reg := registry.NewRegistry()
+	seedLiveSession(t, reg) // a live session is registered so we isolate the arg failure
+	h := NewWriteTerminalHandler(reg)
+
+	// No "data" key in arguments.
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "write_terminal",
+			Arguments: map[string]any{},
+		},
+	}
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned Go error: %v; want nil (tool errors go in IsError)", err)
+	}
+	e := extractError(t, res)
+	if e.Code != codeInvalidArgument {
+		t.Fatalf("error code = %d, want %d (codeInvalidArgument)", e.Code, codeInvalidArgument)
+	}
+	if !strings.Contains(e.Message, "data") {
+		t.Fatalf("error message = %q, want it to mention 'data'", e.Message)
+	}
+}
+
+// TestWriteTerminalHandler_Oversize proves the size-cap path: data larger than
+// 1 MiB yields codeWriteTooLarge (-32006) and the message contains the limit
+// value (1048576). REQ-WT-003.
+func TestWriteTerminalHandler_Oversize(t *testing.T) {
+	t.Parallel()
+	reg := registry.NewRegistry()
+	s := seedLiveSession(t, reg)
+	h := NewWriteTerminalHandler(reg)
+
+	oversize := strings.Repeat("x", session.MaxWriteBytes+1)
+	res, err := h(context.Background(), newWriteRequest(oversize))
+	if err != nil {
+		t.Fatalf("handler returned Go error: %v; want nil (tool errors go in IsError)", err)
+	}
+	e := extractError(t, res)
+	if e.Code != codeWriteTooLarge {
+		t.Fatalf("error code = %d, want %d (codeWriteTooLarge)", e.Code, codeWriteTooLarge)
+	}
+	if !strings.Contains(e.Message, "1048576") {
+		t.Fatalf("error message = %q, want it to contain the limit 1048576", e.Message)
+	}
+	// The session id must be referenced in the data payload for traceability.
+	if e.Data == nil {
+		t.Fatal("error.Data is nil, want session_id")
+	}
+	if got, _ := e.Data["session_id"].(string); got != s.ID {
+		t.Fatalf("error.Data.session_id = %q, want %q", got, s.ID)
+	}
+}
+
+// TestWriteTerminalHandler_DeadSession proves the liveness-gate path: when the
+// bash process is dead, the handler returns codeSessionNotAlive (-32005) and
+// the message contains the session id. REQ-WT-002.
+func TestWriteTerminalHandler_DeadSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not in PATH; skipping dead-session handler test")
+	}
+	reg := registry.NewRegistry()
+	s := seedLiveSession(t, reg)
+	h := NewWriteTerminalHandler(reg)
+
+	// Kill the bash process and reap it so IsAlive flips to false.
+	if err := s.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill bash: %v", err)
+	}
+	_, _ = s.Cmd.Process.Wait()
+
+	// Wait until the PID is genuinely dead (liveness.IsAlive returns false).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && liveness.IsAlive(s.PID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if liveness.IsAlive(s.PID) {
+		t.Fatalf("pid %d still alive after 2s", s.PID)
+	}
+
+	res, err := h(context.Background(), newWriteRequest("post-mortem"))
+	if err != nil {
+		t.Fatalf("handler returned Go error: %v; want nil (tool errors go in IsError)", err)
+	}
+	e := extractError(t, res)
+	if e.Code != codeSessionNotAlive {
+		t.Fatalf("error code = %d, want %d (codeSessionNotAlive)", e.Code, codeSessionNotAlive)
+	}
+	if !strings.Contains(e.Message, s.ID) {
+		t.Fatalf("error message = %q, want it to contain session id %q", e.Message, s.ID)
+	}
+}
+
+// TestWriteTerminalHandler_ClosedSession proves the closed-session path: after
+// Close() is called, the handler returns codeSessionClosed (-32007).
+// REQ-WT-006.
+func TestWriteTerminalHandler_ClosedSession(t *testing.T) {
+	t.Parallel()
+	reg := registry.NewRegistry()
+	s := seedLiveSession(t, reg)
+	h := NewWriteTerminalHandler(reg)
+
+	// Close the session's PTY. The registry still holds the (closed) session,
+	// so reg.Get returns it and Write observes closed=true.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	res, err := h(context.Background(), newWriteRequest("after-close"))
+	if err != nil {
+		t.Fatalf("handler returned Go error: %v; want nil (tool errors go in IsError)", err)
+	}
+	e := extractError(t, res)
+	if e.Code != codeSessionClosed {
+		t.Fatalf("error code = %d, want %d (codeSessionClosed)", e.Code, codeSessionClosed)
+	}
+	if !strings.Contains(e.Message, s.ID) {
+		t.Fatalf("error message = %q, want it to contain session id %q", e.Message, s.ID)
 	}
 }
 
