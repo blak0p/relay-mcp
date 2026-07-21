@@ -8,13 +8,13 @@ session core (`internal/session/...`) and the MCP protocol layer.
 
 ## Registration map
 
-| Tool              | Name constant                   | Handler              | Status    |
-|-------------------|---------------------------------|----------------------|-----------|
-| `create_terminal` | `description.CreateTerminalName`| `handler.New(reg)`   | v1        |
-| `write_terminal`  | (future)                        | (future)             | planned   |
-| `read_terminal`   | (future)                        | (future)             | planned   |
-| `send_control`    | (future)                        | (future)             | planned   |
-| `close_terminal`  | (future)                        | (future)             | planned   |
+| Tool              | Name constant                   | Handler                       | Status    |
+|-------------------|---------------------------------|-------------------------------|-----------|
+| `create_terminal` | `description.CreateTerminalName`| `handler.New(reg)`             | v1        |
+| `write_terminal`  | `description.WriteTerminalName`| `handler.NewWriteTerminalHandler(reg)` | v1 |
+| `read_terminal`   | (future)                        | (future)                      | planned   |
+| `send_control`    | (future)                        | (future)                      | planned   |
+| `close_terminal`  | (future)                        | (future)                      | planned   |
 
 Each tool's name, summary, and description come from the `description` package
 (REQ-008: single source of truth for tool metadata). The handler receives the

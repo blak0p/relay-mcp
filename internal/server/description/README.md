@@ -15,9 +15,12 @@ coupling to each other.
 | `CreateTerminalName`           | `"create_terminal"` | `server` (tool registration), `handler` (result shaping) |
 | `CreateTerminalSummary`        | one-line summary    | `server` (tool registration) |
 | `CreateTerminalDescription`    | full description    | `server` (tool registration) |
+| `WriteTerminalName`            | `"write_terminal"`  | `server` (tool registration) |
+| `WriteTerminalSummary`         | one-line summary    | `server` (tool registration) |
+| `WriteTerminalDescription`     | full description (states 1 MiB cap + raw-byte/no-auto-Enter contract) | `server` (tool registration) |
 
-The remaining four tools (`write_terminal`, `read_terminal`, `send_control`,
-`close_terminal`) will add their own constant blocks here in follow-up SDDs.
+The remaining three tools (`read_terminal`, `send_control`, `close_terminal`)
+will add their own constant blocks here in follow-up SDDs.
 
 ## Usage
 
