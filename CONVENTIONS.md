@@ -76,6 +76,16 @@ Every Go package has **both** a `README.md` and a `doc.go`. They are NOT redunda
 - Same content copy-pasted in both.
 - No docs at all (the code does not self-document domain context).
 
+### Documented exception: `package main` under `cmd/`
+
+Binary entry points under `cmd/<name>/` typically contain a single `main.go`
+holding both `package main` and `func main()`. The package doc comment lives
+at the top of that `main.go` (idiomatic Go), and the README is the GitHub
+landing page for that binary. A separate `doc.go` would be either empty
+(`go doc` ignores files without a package comment above `package X`) or
+duplicative. For this reason, `cmd/<name>/` is exempt from the docs pair
+rule: the doc comment in `main.go` + the `README.md` next to it is the pair.
+
 ---
 
 ## 4. Commit Style

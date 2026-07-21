@@ -59,4 +59,19 @@ var (
 	// ErrSessionNotFound is returned when no session is registered or the
 	// requested id does not match the active session.
 	ErrSessionNotFound = errors.New("session not found")
+
+	// ErrSessionNotAlive is returned when a write_terminal call targets a
+	// session whose underlying bash process is dead or is missing from the
+	// Registry. Its message includes the session id once attached by the
+	// handler (REQ-WT-002).
+	ErrSessionNotAlive = errors.New("session is not alive")
+
+	// ErrWriteTooLarge is returned when a write_terminal call exceeds the
+	// 1 MiB cap. The message includes the limit (1048576) and the actual
+	// size (REQ-WT-003).
+	ErrWriteTooLarge = errors.New("write exceeds maximum size")
+
+	// ErrSessionClosed is returned when a write_terminal call races with a
+	// close_terminal call and observes the closed flag set (REQ-WT-006).
+	ErrSessionClosed = errors.New("session is closed")
 )

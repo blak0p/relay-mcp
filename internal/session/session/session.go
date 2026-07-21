@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/blak0p/relay-mcp/internal/idgen"
@@ -37,8 +38,8 @@ type Session struct {
 	StartedAt time.Time
 	State     SessionState
 
-	closed bool       // guards Close against double-close
-	mu     sync.Mutex // guards State and closed
+	closed atomic.Bool // guards Close against double-close; atomic for lock-free reads from Write
+	mu     sync.Mutex  // guards State and the double-close idempotency check in Close
 }
 
 // New constructs a Session from a started (or about-to-start) command and its
@@ -56,8 +57,10 @@ func New(cmd *exec.Cmd, pty *os.File) *Session {
 	}
 }
 
-// closeClosed tracks whether Close has already run. Guarded by s.mu so
-// concurrent closes are safe.
+// closeClosed tracks whether Close has already run. The flag is an
+// atomic.Bool so Write can read it lock-free (no need to acquire s.mu to
+// observe closed). The idempotent double-close check itself is still
+// guarded by s.mu.
 //
 // Close releases the PTY master file descriptor. It does NOT kill or wait on
 // the bash process — process teardown is the caller's responsibility (e.g.
@@ -66,10 +69,10 @@ func New(cmd *exec.Cmd, pty *os.File) *Session {
 func (s *Session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return nil
 	}
-	s.closed = true
+	s.closed.Store(true)
 	if s.PTY != nil {
 		return s.PTY.Close()
 	}
