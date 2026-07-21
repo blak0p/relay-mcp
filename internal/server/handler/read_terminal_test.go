@@ -38,6 +38,25 @@ func TestReadTerminalSnapshotAndDrain(t *testing.T) {
 	}
 }
 
+func TestReadTerminalSnapshotWithoutWaitUsesDefaultTimeout(t *testing.T) {
+	reg := seededReadRegistry(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	started := time.Now()
+	res, err := NewReadTerminalHandler(reg)(ctx, readRequest(map[string]any{"mode": "snapshot"}, nil))
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("handler returned Go error: %v", err)
+	}
+	if got, want := extractReadResult(t, res), (ReadTerminalResult{Status: "running"}); got != want {
+		t.Fatalf("result = %+v, want %+v", got, want)
+	}
+	if elapsed < output.DefaultWait {
+		t.Fatalf("elapsed = %s, want at least default wait %s", elapsed, output.DefaultWait)
+	}
+}
+
 func TestReadTerminalStableErrors(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
