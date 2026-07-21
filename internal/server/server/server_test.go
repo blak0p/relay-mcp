@@ -47,6 +47,72 @@ func TestNewServer_NilRegistryReturnsError(t *testing.T) {
 	}
 }
 
+// TestNewServer_RegistersWriteTerminalTool proves the write_terminal tool is
+// registered alongside create_terminal with the correct name, description,
+// and a non-nil handler. REQ-WT-008.
+func TestNewServer_RegistersWriteTerminalTool(t *testing.T) {
+	t.Parallel()
+	reg := registry.NewRegistry()
+	s, err := NewServer(reg)
+	if err != nil {
+		t.Fatalf("NewServer = %v, want nil", err)
+	}
+
+	tools := s.ListTools()
+
+	// create_terminal must still be present.
+	if _, ok := tools[description.CreateTerminalName]; !ok {
+		t.Fatalf("create_terminal not registered; registered tools = %v", toolNames(tools))
+	}
+
+	// write_terminal must be present with the right name, description, and handler.
+	wt, ok := tools[description.WriteTerminalName]
+	if !ok {
+		t.Fatalf("write_terminal not registered; registered tools = %v", toolNames(tools))
+	}
+	if wt.Tool.Name != description.WriteTerminalName {
+		t.Fatalf("write_terminal tool name = %q, want %q", wt.Tool.Name, description.WriteTerminalName)
+	}
+	if wt.Tool.Description != description.WriteTerminalDescription {
+		t.Fatalf("write_terminal description = %q, want %q", wt.Tool.Description, description.WriteTerminalDescription)
+	}
+	if wt.Handler == nil {
+		t.Fatal("write_terminal handler is nil")
+	}
+
+	// The input schema must declare exactly one required string property "data".
+	props := wt.Tool.InputSchema.Properties
+	if len(props) != 1 {
+		t.Fatalf("write_terminal input schema has %d properties, want 1 (data)", len(props))
+	}
+	rawProp, ok := props["data"]
+	if !ok {
+		t.Fatalf("write_terminal input schema has no 'data' property; got %v", props)
+	}
+	propMap, ok := rawProp.(map[string]any)
+	if !ok {
+		t.Fatalf("write_terminal 'data' property is %T, want map[string]any", rawProp)
+	}
+	propType, _ := propMap["type"].(string)
+	if propType != "string" {
+		t.Fatalf("write_terminal 'data' property type = %q, want \"string\"", propType)
+	}
+	if !containsString(wt.Tool.InputSchema.Required, "data") {
+		t.Fatalf("write_terminal 'data' is not required; required = %v", wt.Tool.InputSchema.Required)
+	}
+}
+
+// containsString reports whether s is in the slice. Kept local to avoid pulling
+// in slices for one-off test use.
+func containsString(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 func toolNames(m map[string]*mcpserver.ServerTool) []string {
 	out := make([]string, 0, len(m))
 	for n := range m {
