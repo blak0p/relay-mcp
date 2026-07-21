@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -428,6 +429,57 @@ func TestWrite_DeadSessionFlipsToError(t *testing.T) {
 	}
 }
 
-// --- T-WT-05: partial write contract (RED tests added below) ---
+// --- T-WT-05: partial write contract ---
+
+// TestWrite_PartialWrite proves the partial-write contract: when the PTY
+// accepts fewer bytes than requested, Write returns (N, nil) with N < len(data)
+// and does NOT internally retry the remainder. REQ-WT-004.
+func TestWrite_PartialWrite(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("true")
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	s := New(cmd, w)
+	s.PID = os.Getpid() // alive, so the liveness gate passes
+
+	// stubWriter accepts only the first N bytes of any Write call and
+	// records how many times Write was invoked (must be exactly 1 — no retry).
+	stub := &partialStub{acceptN: 4}
+	s.setPtyWriterForTest(stub)
+
+	data := []byte("0123456789") // len 10
+	n, err := s.Write(data)
+	if err != nil {
+		t.Fatalf("Write = (%d, %v), want (4, nil)", n, err)
+	}
+	if n != 4 {
+		t.Fatalf("n = %d, want 4 (partial count, no retry)", n)
+	}
+	if stub.calls != 1 {
+		t.Fatalf("stub.Write called %d time(s), want exactly 1 (no internal retry)", stub.calls)
+	}
+	if !bytes.Equal(stub.buf, data[:4]) {
+		t.Fatalf("stub received %q, want %q (only first N bytes)", stub.buf, data[:4])
+	}
+}
+
+// partialStub is a test stub that accepts only the first acceptN bytes of
+// each Write call and records the call count so the test can prove no retry.
+type partialStub struct {
+	acceptN int
+	buf     []byte
+	calls   int
+}
+
+func (p *partialStub) Write(b []byte) (int, error) {
+	p.calls++
+	n := len(b)
+	if p.acceptN > 0 && p.acceptN < n {
+		n = p.acceptN
+	}
+	p.buf = append(p.buf, b[:n]...)
+	return n, nil
+}
 
 // --- T-WT-06: concurrent writes (RED tests added below) ---
