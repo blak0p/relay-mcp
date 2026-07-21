@@ -307,3 +307,106 @@ func parseToolErrorFromResult(t *testing.T, raw json.RawMessage) jsonrpcError {
 	}
 	return env
 }
+
+// writeTerminalResult is the success payload of write_terminal.
+type writeTerminalResult struct {
+	BytesWritten int    `json:"bytes_written"`
+	State        string `json:"state"`
+}
+
+// callWriteTerminal invokes the write_terminal tool with the given data and
+// returns the parsed success payload.
+func callWriteTerminal(t *testing.T, probe *e2eProbe, id int, data string) writeTerminalResult {
+	t.Helper()
+	resp := probe.send(t, id, "tools/call", map[string]any{
+		"name":      "write_terminal",
+		"arguments": map[string]any{"data": data},
+	})
+	if resp.Error != nil {
+		t.Fatalf("write_terminal (id=%d) returned JSON-RPC error: %+v", id, resp.Error)
+	}
+	if resp.Result == nil {
+		t.Fatalf("write_terminal (id=%d) returned no result", id)
+	}
+	return parseWriteToolResultFromResult(t, resp.Result)
+}
+
+// parseWriteToolResultFromResult extracts the {bytes_written, state} payload
+// from a successful write_terminal CallToolResult.
+func parseWriteToolResultFromResult(t *testing.T, raw json.RawMessage) writeTerminalResult {
+	t.Helper()
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		t.Fatalf("unmarshal CallToolResult: %v (raw=%s)", err, raw)
+	}
+	if wrapper.IsError {
+		t.Fatalf("write_terminal CallToolResult.IsError = true; content=%v", wrapper.Content)
+	}
+	if len(wrapper.Content) == 0 || wrapper.Content[0].Type != "text" {
+		t.Fatalf("unexpected content shape: %+v", wrapper.Content)
+	}
+	var out writeTerminalResult
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &out); err != nil {
+		t.Fatalf("unmarshal write_terminal payload %q: %v", wrapper.Content[0].Text, err)
+	}
+	return out
+}
+
+// TestE2E_WriteTerminal_RoundTrip proves the full MCP path: initialize →
+// create_terminal → write_terminal. We assert the write_terminal response
+// carries bytes_written == len(data) and state == "running". Actual byte
+// delivery to the PTY is proven at the unit level (T-WT-04); at the e2e level
+// the response shape is the contract the client branches on. REQ-WT-001,
+// REQ-WT-008, REQ-WT-009.
+func TestE2E_WriteTerminal_RoundTrip(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not in PATH; skipping E2E test")
+	}
+	probe := newE2EProbe(t)
+
+	// 1. initialize.
+	initResp := probe.send(t, 1, "initialize", map[string]any{
+		"protocolVersion": "2025-11-25",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "e2e-test", "version": "0.0.1"},
+	})
+	if initResp.Error != nil {
+		t.Fatalf("initialize returned error: %+v", initResp.Error)
+	}
+
+	// 2. create_terminal → running session.
+	created := callCreateTerminal(t, probe, 2)
+	if created.State != "running" {
+		t.Fatalf("create_terminal state = %q, want running", created.State)
+	}
+
+	// 3. write_terminal with "echo HELLO_FROM_WRITE\n" — must return
+	//    bytes_written == len(payload) and state == "running".
+	payload := "echo HELLO_FROM_WRITE\n"
+	written := callWriteTerminal(t, probe, 3, payload)
+	if written.State != "running" {
+		t.Fatalf("write_terminal state = %q, want running", written.State)
+	}
+	if written.BytesWritten != len(payload) {
+		t.Fatalf("write_terminal bytes_written = %d, want %d (len(payload))", written.BytesWritten, len(payload))
+	}
+	if written.BytesWritten <= 0 {
+		t.Fatalf("write_terminal bytes_written = %d, want > 0", written.BytesWritten)
+	}
+
+	// 4. Second write_terminal with a smaller payload proves the session stays
+	//    usable across calls (no one-shot side effect).
+	again := callWriteTerminal(t, probe, 4, "ls\n")
+	if again.State != "running" {
+		t.Fatalf("second write_terminal state = %q, want running", again.State)
+	}
+	if again.BytesWritten != len("ls\n") {
+		t.Fatalf("second write_terminal bytes_written = %d, want %d", again.BytesWritten, len("ls\n"))
+	}
+}

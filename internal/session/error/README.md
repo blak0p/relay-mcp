@@ -22,12 +22,27 @@ folder.
 
 ## Sentinels
 
-| Error | Trigger | JSON-RPC code (PR2) |
-|-------|---------|---------------------|
+| Error | Trigger | JSON-RPC code |
+|-------|---------|---------------|
 | `ErrSessionAlreadyExists` | `Registry.Put` when a session is already registered. Carries the existing id. | -32001 |
 | `ErrBashNotFound` | `exec.LookPath("bash")` fails. No fallback shell. | -32002 |
 | `ErrSpawnFailed` | `pty.StartWithSize` or `cmd.Start` fails. | -32003 |
-| `ErrSessionNotFound` | `Registry.Get` on an empty registry. | -32004 |
+| `ErrSessionNotFound` | `Registry.Get` on an empty registry, or the requested id does not match the active session. | -32004 |
+| `ErrSessionNotAlive` | `write_terminal` targets a session whose bash process is dead (or a session id absent from the Registry). Message includes the session id. | -32005 |
+| `ErrWriteTooLarge` | `write_terminal` payload exceeds `MaxWriteBytes` (1 MiB). Message includes the limit and the actual size. | -32006 |
+| `ErrSessionClosed` | `write_terminal` races with `close_terminal` and observes the `closed` flag set. | -32007 |
+| `ErrInvalidArgument` | `write_terminal` is called with a missing or wrong-typed `data` argument. | -32602 (JSON-RPC invalid params) |
+
+### Code assignment rationale
+
+`ErrSessionNotFound` was originally mapped to -32004 in the create_terminal
+era. The `write_terminal` design initially proposed reusing -32004 for
+`codeSessionNotAlive`, which would have collided. We keep -32004 for
+`ErrSessionNotFound` (no caller breakage) and shift the new write sentinels
+to -32005..-32007. `ErrInvalidArgument` reuses the JSON-RPC standard
+`invalid_params` code (-32602) since it is a parameter-shape failure, not a
+session-lifecycle failure. The codes are stable: clients can branch on them
+without string matching.
 
 ## Exported API
 
@@ -37,6 +52,9 @@ folder.
 | `ErrBashNotFound` | sentinel | `bash` not found in `PATH`. |
 | `ErrSpawnFailed` | sentinel | PTY or process start failed. |
 | `ErrSessionNotFound` | sentinel | No session registered / id does not match. |
+| `ErrSessionNotAlive` | sentinel | `write_terminal` target's bash process is dead or the session is missing. |
+| `ErrWriteTooLarge` | sentinel | `write_terminal` payload exceeds the 1 MiB cap. |
+| `ErrSessionClosed` | sentinel | `write_terminal` observed the `closed` flag set (close race). |
 | `ExistingSessionID(err) string` | func | Extracts the conflicting id from an `ErrSessionAlreadyExists` error; `""` if the error is not an existing-session error. |
 | `NewExistingSessionError(id) error` | func | Builds the wrapped error carrying the id. Exported for the sibling `registry` package. |
 
@@ -59,6 +77,17 @@ if err := reg.Put(s); err != nil {
 cur, err := reg.Get()
 if errors.Is(err, serror.ErrSessionNotFound) {
     // return JSON-RPC -32004
+}
+
+n, err := s.Write(data)
+if errors.Is(err, serror.ErrWriteTooLarge) {
+    // return JSON-RPC -32006 (message carries 1048576 + actual size)
+}
+if errors.Is(err, serror.ErrSessionNotAlive) {
+    // return JSON-RPC -32005 (message carries the session id)
+}
+if errors.Is(err, serror.ErrSessionClosed) {
+    // return JSON-RPC -32007
 }
 ```
 

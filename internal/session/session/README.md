@@ -19,19 +19,21 @@ own the liveness primitive. It is pure domain logic.
 
 ```go
 type Session struct {
-    ID        string       // "term_" + 16 hex chars (idgen.New())
-    PTY       *os.File     // master end of the PTY
-    Cmd       *exec.Cmd    // bash process handle
-    PID       int          // cached for liveness checks
+    ID        string         // "term_" + 16 hex chars (idgen.New())
+    PTY       *os.File       // master end of the PTY
+    Cmd       *exec.Cmd      // bash process handle
+    PID       int            // cached for liveness checks
     StartedAt time.Time
-    State     SessionState // running | exited | error
-    // unexported: closed bool, mu sync.Mutex
+    State     SessionState   // running | exited | error
+    // unexported: closed atomic.Bool, mu sync.Mutex,
+    //             writeMu sync.Mutex, ptyWriter ptyWriter (test-only seam)
 }
 ```
 
 A `Session` is created via `New(cmd, pty)` and owns the PTY master file
 descriptor. The caller is responsible for starting the process (typically
-`creack/pty.StartWithSize`).
+`creack/pty.StartWithSize`). `closed` is an `atomic.Bool` so `Write` can read
+it lock-free without acquiring `mu` (see Lock coordination below).
 
 ### `SessionState`
 
@@ -47,12 +49,14 @@ Three states:
 
 | Identifier | Kind | Description |
 |------------|------|-------------|
+| `MaxWriteBytes` | const | Maximum bytes accepted in one `Write` call (`1 << 20`, 1 MiB). Hard rejection, not a chunking primitive (REQ-WT-003). |
 | `Session` | struct | One PTY-backed bash process. |
 | `SessionState` | type | Lifecycle state enum (`string`). |
 | `StateRunning`, `StateExited`, `StateError` | consts | The three states. |
 | `New(cmd, pty) *Session` | func | Constructor; generates id via `idgen.New()`, sets state to `StateRunning`. Does not start the process. |
-| `(s *Session) Close() error` | method | Closes the PTY master FD. Idempotent. Does not kill or wait on the process. |
+| `(s *Session) Close() error` | method | Closes the PTY master FD. Idempotent (double-close guarded via `mu`). Does not kill or wait on the process. |
 | `(s *Session) ReconcileState()` | method | Lazy liveness: if `StateRunning` but the pid is dead, flip to `StateExited`/`StateError`. Safe for concurrent use. |
+| `(s *Session) Write(data []byte) (int, error)` | method | Injects raw bytes into the PTY master. Serialized via `writeMu`; rejects oversize, closed, and dead sessions (REQ-WT-001..006). Partial writes are not retried (REQ-WT-004). |
 
 ## Usage
 
@@ -83,6 +87,58 @@ kernel whether the pid still exists, with no side effects.
 This is the lazy liveness contract: clients learn about state changes only
 when they trigger a session operation. Proactive monitoring is explicitly
 deferred to the `read_terminal` SDD.
+
+## Write coordination
+
+`Write(data []byte) (int, error)` injects raw bytes into the PTY master. It is
+the implementation behind the `write_terminal` MCP tool.
+
+### Lock coordination
+
+```
+Write():
+  1. size cap check (no lock)
+  2. writeMu.Lock()
+  3.   closed.Load()          ← atomic.Bool, lock-free read
+  4.   liveness.IsAlive(pid)   ← no lock
+  5.   mu.Lock() + mu.Unlock() ← only if flipping State to StateError
+  6.   ptyWriter.Write(data)   ← holds writeMu during I/O
+  7. writeMu.Unlock()
+
+Close():
+  1. mu.Lock()
+  2.   closed.Store(true)
+  3.   PTY.Close()
+  4. mu.Unlock()
+```
+
+`writeMu` serializes concurrent writes so their byte streams do not interleave
+in the PTY (REQ-WT-005). `closed` is an `atomic.Bool` so `Write` reads it
+lock-free — there is no lock ordering question between `writeMu` and `mu`.
+
+### Test seam: `ptyWriter`
+
+`Write` targets an unexported `ptyWriter` interface (`Write([]byte) (int, error)`)
+that defaults to the real `*os.File` PTY. The test-only `setPtyWriterForTest`
+setter lets `session_test.go` inject a stub for partial-write and
+writeMu-holding-during-IO proofs without touching the real FD. Production
+behavior is identical — the indirection only exists for testability.
+
+### Partial writes
+
+`Write` returns `(n, err)` straight from the PTY write. If `n < len(data)` with
+`err == nil`, the caller (the MCP handler) surfaces `bytes_written = n` and the
+agent decides whether to resend the remainder. There is no internal retry
+(REQ-WT-004).
+
+### Race window
+
+`Close()` does NOT acquire `writeMu`. A concurrent `Write` may pass the
+`closed.Load()` check, then `Close` closes the PTY while `Write` is still in
+`ptyWriter.Write(data)`. The design documents this as acceptable — the kernel
+rejects the write to a stale FD and the handler surfaces the I/O error. The
+handler-level concurrent close-race test is deferred to the `close_terminal`
+SDD.
 
 ## Related packages
 

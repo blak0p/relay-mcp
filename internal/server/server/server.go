@@ -40,5 +40,19 @@ func NewServer(reg *registry.Registry) (*mcpserver.MCPServer, error) {
 	)
 	s.AddTool(tool, handler.New(reg))
 
+	// write_terminal: inject raw bytes into the active session's PTY. The
+	// schema declares one required string parameter "data" (REQ-WT-008).
+	// Two explicit AddTool calls — obvious, grep-friendly, zero abstraction
+	// overhead for 2 tools (see design: "two explicit calls over a loop").
+	writeTool := mcp.NewTool(
+		description.WriteTerminalName,
+		mcp.WithDescription(description.WriteTerminalDescription),
+		mcp.WithString("data",
+			mcp.Required(),
+			mcp.Description("Raw bytes to inject into the terminal session (max 1 MiB). No auto-Enter — include \\n if you want to submit."),
+		),
+	)
+	s.AddTool(writeTool, handler.NewWriteTerminalHandler(reg))
+
 	return s, nil
 }

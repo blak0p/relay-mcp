@@ -25,6 +25,22 @@ h := handler.New(reg)
 s.AddTool(tool, h)
 ```
 
+## `write_terminal`
+
+`NewWriteTerminalHandler(reg)` returns the `write_terminal` handler. It:
+
+1. Extracts the `data` string argument. Missing or wrong-typed → `-32602`.
+2. Looks up the active session via `reg.Get()`. No session → `-32004`.
+3. Delegates to `session.Write([]byte(data))` and maps typed errors:
+   `ErrSessionNotAlive` → `-32005`, `ErrWriteTooLarge` → `-32006`,
+   `ErrSessionClosed` → `-32007`, other → `-32003` (generic fallback).
+4. On success returns `{bytes_written, state}`.
+
+```go
+h := handler.NewWriteTerminalHandler(reg)
+s.AddTool(writeTool, h)
+```
+
 ### Error code table
 
 | Code    | Constant                  | Trigger                                        | `data`                |
@@ -32,7 +48,11 @@ s.AddTool(tool, h)
 | `-32001`| session_already_exists    | A session is already registered                | `{existing_id}`       |
 | `-32002`| bash_not_found            | `exec.LookPath("bash")` fails                 | —                     |
 | `-32003`| spawn_failed              | `pty.StartWithSize` or registry Put fails     | — (or error text)     |
-| `-32004`| session_not_found         | reserved for the other tools (close/read/...) | —                     |
+| `-32004`| session_not_found         | `write_terminal` with no active session       | —                     |
+| `-32005`| session_not_alive         | `write_terminal` target's bash process is dead | `{session_id}`       |
+| `-32006`| write_too_large           | `write_terminal` payload exceeds 1 MiB        | `{session_id, limit}` |
+| `-32007`| session_closed            | `write_terminal` observes `closed` flag set   | `{session_id}`        |
+| `-32602`| invalid_argument          | `write_terminal` missing/wrong-typed `data`   | —                     |
 
 ### Why errors travel inside `CallToolResult`, not as JSON-RPC error responses
 
