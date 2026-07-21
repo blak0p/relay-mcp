@@ -1,13 +1,17 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/blak0p/relay-mcp/internal/session/liveness"
+	serror "github.com/blak0p/relay-mcp/internal/session/error"
 )
 
 var sessionIDFormat = regexp.MustCompile(`^term_[0-9a-f]{16}$`)
@@ -213,3 +217,130 @@ func waitForDead(t *testing.T, pid int) {
 		t.Fatalf("pid %d still alive after 2s", pid)
 	}
 }
+
+// --- T-WT-03: Session.Write skeleton (size cap + closed gate) ---
+
+// TestWrite_RejectsOversize proves the 1 MiB cap is enforced BEFORE any PTY
+// write or lock acquisition. REQ-WT-003.
+func TestWrite_RejectsOversize(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("true")
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	s := New(cmd, w)
+	s.PID = os.Getpid() // alive, so the liveness gate would not be the cause
+
+	oversize := make([]byte, MaxWriteBytes+1)
+	n, err := s.Write(oversize)
+	if n != 0 {
+		t.Fatalf("n = %d, want 0 on oversize rejection", n)
+	}
+	if !errors.Is(err, serror.ErrWriteTooLarge) {
+		t.Fatalf("err = %v, want errors.Is(_, ErrWriteTooLarge)", err)
+	}
+	if !strings.Contains(err.Error(), "1048576") || !strings.Contains(err.Error(), "1048577") {
+		t.Fatalf("err = %q, want message containing both 1048576 and 1048577", err.Error())
+	}
+}
+
+// TestWrite_RejectsClosedSession proves the closed flag is observed under
+// writeMu and returns ErrSessionClosed. REQ-WT-006 (session boundary).
+func TestWrite_RejectsClosedSession(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("true")
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	s := New(cmd, w)
+	s.PID = os.Getpid()
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+	n, err := s.Write([]byte("hi"))
+	if n != 0 {
+		t.Fatalf("n = %d, want 0 on closed session", n)
+	}
+	if !errors.Is(err, serror.ErrSessionClosed) {
+		t.Fatalf("err = %v, want errors.Is(_, ErrSessionClosed)", err)
+	}
+}
+
+// TestWrite_AcquiresWriteMu proves writeMu is held for the duration of the
+// PTY write: a second Write does not enter its critical section until the
+// first's PTY write returns. We use a stub writer whose Write blocks on a
+// channel, injected via the test-only setPtyWriter hook.
+func TestWrite_AcquiresWriteMu(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("true")
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	s := New(cmd, w)
+	s.PID = os.Getpid()
+
+	stub := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	s.setPtyWriterForTest(stub)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := s.Write([]byte("first"))
+		firstDone <- err
+	}()
+
+	// Wait for the first Write to enter its PTY write (blocking on the
+	// stub's release channel). This proves writeMu is held.
+	select {
+	case <-stub.entered:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first Write never reached the PTY write; writeMu not acquired before PTY I/O")
+	}
+
+	// The second Write must block on writeMu while the first holds it.
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := s.Write([]byte("second"))
+		secondDone <- err
+	}()
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second Write returned %v before first released writeMu", err)
+	case <-time.After(100 * time.Millisecond):
+		// expected: blocked on writeMu
+	}
+
+	// Release the first Write.
+	close(stub.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Write = %v, want nil", err)
+	}
+	// Now the second Write proceeds and completes.
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second Write = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Write did not complete after first released writeMu")
+	}
+}
+
+// blockingWriter is a test stub that records when its Write is entered and
+// blocks until the release channel is closed.
+type blockingWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingWriter) Write(p []byte) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return len(p), nil
+}
+
+// --- T-WT-04: PTY wire + liveness (RED tests added below) ---
+
+// --- T-WT-05: partial write contract (RED tests added below) ---
+
+// --- T-WT-06: concurrent writes (RED tests added below) ---
