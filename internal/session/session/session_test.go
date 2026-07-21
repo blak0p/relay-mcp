@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
+
 	"github.com/blak0p/relay-mcp/internal/session/liveness"
 	serror "github.com/blak0p/relay-mcp/internal/session/error"
 )
@@ -339,7 +341,92 @@ func (b *blockingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// --- T-WT-04: PTY wire + liveness (RED tests added below) ---
+// --- T-WT-04: PTY wire + liveness ---
+
+// TestWrite_HappyPath proves the PTY write is wired: writing "echo hi\n" to a
+// real bash session delivers the bytes and returns (8, nil). REQ-WT-001.
+func TestWrite_HappyPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash available; skipping PTY integration test")
+	}
+	cmd := exec.Command(bash, "--norc", "-i")
+	ws := &pty.Winsize{Rows: 30, Cols: 100}
+	ptyFile, err := pty.StartWithSize(cmd, ws)
+	if err != nil {
+		t.Fatalf("pty.StartWithSize: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ptyFile.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+
+	s := New(cmd, ptyFile)
+	s.PID = cmd.Process.Pid
+
+	n, err := s.Write([]byte("echo hi\n"))
+	if err != nil {
+		t.Fatalf("Write = (%d, %v), want (8, nil)", n, err)
+	}
+	if n != 8 {
+		t.Fatalf("n = %d, want 8 (len(\"echo hi\\n\"))", n)
+	}
+}
+
+// TestWrite_DeadSessionFlipsToError proves the liveness gate: after the bash
+// process dies, Write returns ErrSessionNotAlive and the session State flips
+// to StateError. REQ-WT-002.
+func TestWrite_DeadSessionFlipsToError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash available; skipping PTY integration test")
+	}
+	cmd := exec.Command(bash, "--norc", "-i")
+	ws := &pty.Winsize{Rows: 30, Cols: 100}
+	ptyFile, err := pty.StartWithSize(cmd, ws)
+	if err != nil {
+		t.Fatalf("pty.StartWithSize: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ptyFile.Close()
+		if cmd.Process != nil {
+			_, _ = cmd.Process.Wait()
+		}
+	})
+
+	s := New(cmd, ptyFile)
+	s.PID = cmd.Process.Pid
+
+	// Kill the bash process and reap it so the PID is no longer alive.
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill bash: %v", err)
+	}
+	_, _ = cmd.Process.Wait() // reap so IsAlive flips to false
+	waitForDead(t, s.PID)
+
+	n, err := s.Write([]byte("post-mortem\n"))
+	if n != 0 {
+		t.Fatalf("n = %d, want 0 on dead session", n)
+	}
+	if !errors.Is(err, serror.ErrSessionNotAlive) {
+		t.Fatalf("err = %v, want errors.Is(_, ErrSessionNotAlive)", err)
+	}
+	if !strings.Contains(err.Error(), s.ID) {
+		t.Fatalf("err = %q, want message containing session id %q", err.Error(), s.ID)
+	}
+	if s.State != StateError {
+		t.Fatalf("s.State = %q, want %q (flipped on dead-PID detection)", s.State, StateError)
+	}
+}
 
 // --- T-WT-05: partial write contract (RED tests added below) ---
 

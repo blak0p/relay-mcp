@@ -157,6 +157,18 @@ func (s *Session) Write(data []byte) (int, error) {
 	if s.closed.Load() {
 		return 0, serror.ErrSessionClosed
 	}
+	// Liveness gate: if the underlying bash process is dead, flip the
+	// state to StateError and refuse the write. This is the lazy
+	// reconciliation path for write_terminal (REQ-WT-002). The race window
+	// between this check and the PTY write is acceptable and documented —
+	// the kernel will reject a write to a stale FD and the handler surfaces
+	// the I/O error.
+	if !liveness.IsAlive(s.PID) {
+		s.mu.Lock()
+		s.State = StateError
+		s.mu.Unlock()
+		return 0, fmt.Errorf("%w: session %s is not alive", serror.ErrSessionNotAlive, s.ID)
+	}
 	if s.ptyWriter == nil {
 		return 0, fmt.Errorf("%w: PTY writer not configured", serror.ErrSessionClosed)
 	}
