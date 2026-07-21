@@ -19,9 +19,9 @@ const ServerName = "relay-mcp"
 // "0.1.0"; a future release will wire this to a build-time variable.
 const ServerVersion = "0.1.0"
 
-// NewServer builds a *mcpserver.MCPServer with the create_terminal tool
-// registered. reg must be non-nil; the same registry instance must be
-// shared with every handler (single-session invariant).
+// NewServer builds a *mcpserver.MCPServer with every available terminal tool
+// registered. reg must be non-nil; the same registry instance must be shared
+// with every handler (single-session invariant).
 //
 // The tool is registered with the name/summary/description sourced from the
 // description package (REQ-008: single source of truth for tool metadata),
@@ -53,6 +53,30 @@ func NewServer(reg *registry.Registry) (*mcpserver.MCPServer, error) {
 		),
 	)
 	s.AddTool(writeTool, handler.NewWriteTerminalHandler(reg))
+
+	readTool := mcp.NewTool(
+		description.ReadTerminalName,
+		mcp.WithDescription(description.ReadTerminalDescription),
+		mcp.WithString("mode",
+			mcp.Enum("stream", "snapshot", "drain"),
+			mcp.Description("Read mode. Defaults to stream; snapshot and drain return bounded polling results."),
+		),
+		mcp.WithInteger("cursor",
+			mcp.Min(0),
+			mcp.Description("Absolute output cursor. Omit to begin at the oldest retained byte."),
+		),
+		mcp.WithInteger("max_bytes",
+			mcp.Min(1),
+			mcp.Max(65536),
+			mcp.Description("Maximum bytes returned by snapshot or drain (1 through 65536)."),
+		),
+		mcp.WithInteger("wait_ms",
+			mcp.Min(0),
+			mcp.Max(1000),
+			mcp.Description("Maximum snapshot or drain wait in milliseconds (0 through 1000)."),
+		),
+	)
+	s.AddTool(readTool, handler.NewReadTerminalHandler(reg))
 
 	return s, nil
 }

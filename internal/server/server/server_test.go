@@ -102,6 +102,90 @@ func TestNewServer_RegistersWriteTerminalTool(t *testing.T) {
 	}
 }
 
+func TestNewServer_RegistersReadTerminalTool(t *testing.T) {
+	t.Parallel()
+	reg := registry.NewRegistry()
+	s, err := NewServer(reg)
+	if err != nil {
+		t.Fatalf("NewServer = %v, want nil", err)
+	}
+
+	read, ok := s.ListTools()[description.ReadTerminalName]
+	if !ok {
+		t.Fatalf("read_terminal not registered; registered tools = %v", toolNames(s.ListTools()))
+	}
+	if read.Tool.Name != description.ReadTerminalName {
+		t.Fatalf("read_terminal tool name = %q, want %q", read.Tool.Name, description.ReadTerminalName)
+	}
+	if read.Tool.Description != description.ReadTerminalDescription {
+		t.Fatalf("read_terminal description = %q, want %q", read.Tool.Description, description.ReadTerminalDescription)
+	}
+	if read.Handler == nil {
+		t.Fatal("read_terminal handler is nil")
+	}
+
+	props := read.Tool.InputSchema.Properties
+	if len(props) != 4 {
+		t.Fatalf("read_terminal input schema has %d properties, want 4", len(props))
+	}
+	assertReadStringProperty(t, props, "mode", []string{"stream", "snapshot", "drain"})
+	assertReadIntegerProperty(t, props, "cursor", 0, nil)
+	assertReadIntegerProperty(t, props, "max_bytes", 1, 65536)
+	assertReadIntegerProperty(t, props, "wait_ms", 0, 1000)
+	if len(read.Tool.InputSchema.Required) != 0 {
+		t.Fatalf("read_terminal required fields = %v, want none", read.Tool.InputSchema.Required)
+	}
+}
+
+func assertReadStringProperty(t *testing.T, props map[string]any, name string, wantEnum []string) {
+	t.Helper()
+	property, ok := props[name].(map[string]any)
+	if !ok {
+		t.Fatalf("read_terminal %q property = %T, want map[string]any", name, props[name])
+	}
+	if got, _ := property["type"].(string); got != "string" {
+		t.Fatalf("read_terminal %q type = %q, want string", name, got)
+	}
+	if got, ok := property["enum"].([]string); !ok || !equalStringSlices(got, wantEnum) {
+		t.Fatalf("read_terminal %q enum = %#v, want %#v", name, property["enum"], wantEnum)
+	}
+}
+
+func assertReadIntegerProperty(t *testing.T, props map[string]any, name string, wantMin int, wantMax any) {
+	t.Helper()
+	property, ok := props[name].(map[string]any)
+	if !ok {
+		t.Fatalf("read_terminal %q property = %T, want map[string]any", name, props[name])
+	}
+	if got, _ := property["type"].(string); got != "integer" {
+		t.Fatalf("read_terminal %q type = %q, want integer", name, got)
+	}
+	if got := property["minimum"]; got != wantMin {
+		t.Fatalf("read_terminal %q minimum = %#v, want %d", name, got, wantMin)
+	}
+	if wantMax == nil {
+		if _, ok := property["maximum"]; ok {
+			t.Fatalf("read_terminal %q maximum = %#v, want omitted", name, property["maximum"])
+		}
+		return
+	}
+	if got := property["maximum"]; got != wantMax {
+		t.Fatalf("read_terminal %q maximum = %#v, want %#v", name, got, wantMax)
+	}
+}
+
+func equalStringSlices(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // containsString reports whether s is in the slice. Kept local to avoid pulling
 // in slices for one-off test use.
 func containsString(s []string, v string) bool {

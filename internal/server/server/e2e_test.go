@@ -24,6 +24,8 @@ type jsonrpcMessage struct {
 	ID      json.RawMessage `json:"id,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *jsonrpcError   `json:"error,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
 }
 
 type jsonrpcError struct {
@@ -115,6 +117,16 @@ func findModuleRoot(t *testing.T) string {
 // send writes a JSON-RPC request line and reads the next response line.
 func (p *e2eProbe) send(t *testing.T, id int, method string, params any) *jsonrpcMessage {
 	t.Helper()
+	p.sendRequest(t, id, method, params)
+	line, err := p.readLine(t)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	return unmarshalJSONRPCMessage(t, line)
+}
+
+func (p *e2eProbe) sendRequest(t *testing.T, id int, method string, params any) {
+	t.Helper()
 	body := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
@@ -127,10 +139,10 @@ func (p *e2eProbe) send(t *testing.T, id int, method string, params any) *jsonrp
 	if _, err := fmt.Fprintln(p.stdin, string(raw)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
-	line, err := p.readLine(t)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
+}
+
+func unmarshalJSONRPCMessage(t *testing.T, line string) *jsonrpcMessage {
+	t.Helper()
 	var msg jsonrpcMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		t.Fatalf("unmarshal response %q: %v", line, err)
@@ -408,5 +420,99 @@ func TestE2E_WriteTerminal_RoundTrip(t *testing.T) {
 	}
 	if again.BytesWritten != len("ls\n") {
 		t.Fatalf("second write_terminal bytes_written = %d, want %d", again.BytesWritten, len("ls\n"))
+	}
+}
+
+func TestE2E_ReadTerminal_StreamsProgressBeforeFinalResponse(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not in PATH; skipping E2E test")
+	}
+	probe := newE2EProbe(t)
+
+	initResp := probe.send(t, 1, "initialize", map[string]any{
+		"protocolVersion": "2025-11-25",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "e2e-test", "version": "0.0.1"},
+	})
+	if initResp.Error != nil {
+		t.Fatalf("initialize returned error: %+v", initResp.Error)
+	}
+	created := callCreateTerminal(t, probe, 2)
+	if created.State != "running" {
+		t.Fatalf("create_terminal state = %q, want running", created.State)
+	}
+
+	ready := probe.send(t, 3, "tools/call", map[string]any{
+		"name":      "read_terminal",
+		"arguments": map[string]any{"mode": "snapshot", "wait_ms": 1000},
+	})
+	if ready.Error != nil {
+		t.Fatalf("initial read_terminal snapshot returned JSON-RPC error: %+v", ready.Error)
+	}
+	if ready.Result == nil {
+		t.Fatal("initial read_terminal snapshot returned no result")
+	}
+
+	marker := "READ_TERMINAL_E2E"
+	callWriteTerminal(t, probe, 4, "printf '"+marker+"\\n'; exit\n")
+	probe.sendRequest(t, 5, "tools/call", map[string]any{
+		"name":      "read_terminal",
+		"arguments": map[string]any{},
+		"_meta":     map[string]any{"progressToken": "read-terminal-e2e"},
+	})
+
+	sawProgress := false
+	sawMarker := false
+	for {
+		line, err := probe.readLine(t)
+		if err != nil {
+			t.Fatalf("read read_terminal response: %v", err)
+		}
+		message := unmarshalJSONRPCMessage(t, line)
+		if message.Method == "notifications/progress" {
+			var progress struct {
+				ProgressToken string `json:"progressToken"`
+				Output        string `json:"output"`
+				Cursor        int64  `json:"cursor"`
+				NextCursor    int64  `json:"next_cursor"`
+			}
+			if err := json.Unmarshal(message.Params, &progress); err != nil {
+				t.Fatalf("unmarshal progress params: %v", err)
+			}
+			if progress.ProgressToken != "read-terminal-e2e" {
+				t.Fatalf("progress token = %q, want read-terminal-e2e", progress.ProgressToken)
+			}
+			if progress.NextCursor <= progress.Cursor {
+				t.Fatalf("progress cursor range = [%d,%d), want advancing", progress.Cursor, progress.NextCursor)
+			}
+			sawProgress = true
+			sawMarker = sawMarker || strings.Contains(progress.Output, marker)
+			continue
+		}
+		if string(message.ID) != "5" {
+			t.Fatalf("unexpected message before read_terminal response: %+v", message)
+		}
+		if message.Error != nil {
+			t.Fatalf("read_terminal returned JSON-RPC error: %+v", message.Error)
+		}
+		if message.Result == nil {
+			t.Fatal("read_terminal returned no final result")
+		}
+		var final struct {
+			IsError bool `json:"isError"`
+		}
+		if err := json.Unmarshal(message.Result, &final); err != nil {
+			t.Fatalf("unmarshal read_terminal final result: %v", err)
+		}
+		if final.IsError {
+			t.Fatalf("read_terminal final result is an error: %s", message.Result)
+		}
+		if !sawProgress {
+			t.Fatal("read_terminal final response arrived before a progress notification")
+		}
+		if !sawMarker {
+			t.Fatalf("progress notifications did not contain marker %q", marker)
+		}
+		return
 	}
 }

@@ -18,9 +18,12 @@ coupling to each other.
 | `WriteTerminalName`            | `"write_terminal"`  | `server` (tool registration) |
 | `WriteTerminalSummary`         | one-line summary    | `server` (tool registration) |
 | `WriteTerminalDescription`     | full description (states 1 MiB cap + raw-byte/no-auto-Enter contract) | `server` (tool registration) |
+| `ReadTerminalName`             | `"read_terminal"`   | `server` (tool registration), `handler` (request binding) |
+| `ReadTerminalSummary`          | one-line summary    | `server` (tool registration) |
+| `ReadTerminalDescription`      | full description (states default progress streaming and bounded polling alternatives) | `server` (tool registration) |
 
-The remaining three tools (`read_terminal`, `send_control`, `close_terminal`)
-will add their own constant blocks here in follow-up SDDs.
+The remaining two tools (`send_control`, `close_terminal`) will add their own
+constant blocks here in follow-up SDDs.
 
 ## Usage
 
