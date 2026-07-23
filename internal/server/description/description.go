@@ -55,3 +55,17 @@ const (
 	// manifest. It tells clients how to select streaming or bounded reads.
 	ReadTerminalDescription = "Streams terminal output through MCP progress notifications by default. Stream mode requires _meta.progressToken; use snapshot or drain for bounded polling reads. Cursor values are absolute byte positions in the retained 1 MiB output tail."
 )
+
+// close_terminal constants are the single source of truth for the tool's
+// client-facing metadata.
+const (
+	// CloseTerminalName is the MCP tool name clients invoke.
+	CloseTerminalName = "close_terminal"
+
+	// CloseTerminalSummary is the one-line summary shown in tool listings.
+	CloseTerminalSummary = "Close a persistent terminal session by its session id."
+
+	// CloseTerminalDescription explains that matching closes release the sole
+	// session slot and that repeated or mismatched calls are harmless no-ops.
+	CloseTerminalDescription = "Stops and releases the terminal session identified by session_id. Returns its final status and exit code when closed. Unknown, mismatched, or already-released session ids return closed:false."
+)

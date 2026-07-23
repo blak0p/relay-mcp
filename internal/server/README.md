@@ -31,12 +31,9 @@ point in `cmd/relay-mcp`.
 
 ## v1 status
 
-PR2 (this namespace) wires the first tool, `create_terminal`. The remaining
-four tools (`write_terminal`, `read_terminal`, `send_control`,
-`close_terminal`) will add their own handlers to `handler/` and their own
-constant blocks to `description/` in follow-up SDDs, following the same
-layout rule (one sub-package per responsibility, grouped under this
-namespace parent).
+`create_terminal`, `write_terminal`, `read_terminal`, and `close_terminal`
+are wired. `send_control` remains the planned tool; it will follow the same
+handler and description layout.
 
 See `internal/session/README.md` for the session-lifecycle namespace that
 backs this wiring layer.
