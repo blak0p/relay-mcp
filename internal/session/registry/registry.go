@@ -17,6 +17,9 @@ type Registry struct {
 	current *session.Session // nil when no active session
 }
 
+// Cleanup performs the final lifecycle work for a session reserved by Release.
+type Cleanup func(*session.Session) (session.CloseResult, error)
+
 // NewRegistry returns an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{}
@@ -48,4 +51,18 @@ func (r *Registry) Get() (*session.Session, error) {
 	}
 	r.current.ReconcileState()
 	return r.current, nil
+}
+
+// Release reserves the matching session slot while cleanup runs, then clears
+// it whether cleanup succeeds or fails. Missing and mismatched ids are
+// idempotent no-ops and never invoke cleanup.
+func (r *Registry) Release(id string, cleanup Cleanup) (session.CloseResult, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.current == nil || r.current.ID != id {
+		return session.CloseResult{}, false, nil
+	}
+	defer func() { r.current = nil }()
+	result, err := cleanup(r.current)
+	return result, true, err
 }
