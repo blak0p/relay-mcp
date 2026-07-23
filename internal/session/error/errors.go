@@ -74,4 +74,8 @@ var (
 	// ErrSessionClosed is returned when a write_terminal call races with a
 	// close_terminal call and observes the closed flag set (REQ-WT-006).
 	ErrSessionClosed = errors.New("session is closed")
+
+	// ErrSessionCleanup is returned when close_terminal cannot complete required
+	// session teardown. The registry still releases its slot after this error.
+	ErrSessionCleanup = errors.New("session cleanup failed")
 )
