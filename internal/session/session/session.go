@@ -228,7 +228,10 @@ func (s *Session) Close() error {
 // Shutdown terminates the session's complete process group and reaps its
 // leader. It gives SIGTERM the supplied grace period before sending SIGKILL.
 func (s *Session) Shutdown(grace time.Duration) (CloseResult, error) {
-	result := CloseResult{State: s.State, ExitCode: -1}
+	s.mu.Lock()
+	state := s.State
+	s.mu.Unlock()
+	result := CloseResult{State: state, ExitCode: -1}
 	if s.Cmd == nil || s.Cmd.Process == nil {
 		return s.failShutdown(result, errors.New("missing process"))
 	}

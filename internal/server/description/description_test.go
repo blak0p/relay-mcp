@@ -81,3 +81,26 @@ func TestWriteTerminalDescription_StatesContract(t *testing.T) {
 		t.Fatalf("WriteTerminalDescription missing raw-byte (no auto-Enter) mention; got %q", WriteTerminalDescription)
 	}
 }
+
+func TestSendControlConstants_DescribeFiniteAllowlist(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"SendControlName", SendControlName},
+		{"SendControlSummary", SendControlSummary},
+		{"SendControlDescription", SendControlDescription},
+	}
+	for _, c := range cases {
+		if c.value == "" {
+			t.Fatalf("%s is empty, want a non-empty string", c.name)
+		}
+	}
+	if SendControlName != "send_control" {
+		t.Fatalf("SendControlName = %q, want send_control", SendControlName)
+	}
+	if !strings.Contains(SendControlDescription, "allowlist") || !strings.Contains(SendControlDescription, "active") {
+		t.Fatalf("SendControlDescription = %q, want finite allowlist and active-session contract", SendControlDescription)
+	}
+}

@@ -31,9 +31,9 @@ point in `cmd/relay-mcp`.
 
 ## v1 status
 
-`create_terminal`, `write_terminal`, `read_terminal`, and `close_terminal`
-are wired. `send_control` remains the planned tool; it will follow the same
-handler and description layout.
+`create_terminal`, `write_terminal`, `send_control`, `read_terminal`, and
+`close_terminal` are wired. `send_control` resolves a finite control-key
+allowlist and sends its exact bytes only to the active terminal session.
 
 See `internal/session/README.md` for the session-lifecycle namespace that
 backs this wiring layer.

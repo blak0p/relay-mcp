@@ -29,6 +29,7 @@ go.work.sum
 # --- OpenCode runtime metadata ---
 # Local agent registry cache, not part of the project.
 .atl/
+/.opencode/
 
 # --- SDD local artifacts ---
 # Artifact store is engram; no openspec/ folder is generated in this repo.

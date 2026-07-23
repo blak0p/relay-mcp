@@ -41,6 +41,20 @@ const (
 	WriteTerminalDescription = "Writes raw bytes to the PTY of an active terminal session. The data is injected verbatim — no auto-Enter, no transformation. Maximum 1 MiB per call. Returns bytes_written and the current session state. Partial writes are not retried; the agent must resend the remainder."
 )
 
+// send_control constants are the single source of truth for the finite control
+// key tool's client-facing metadata.
+const (
+	// SendControlName is the MCP tool name clients invoke.
+	SendControlName = "send_control"
+
+	// SendControlSummary is the one-line summary shown in tool listings.
+	SendControlSummary = "Send an allowlisted control key to the active terminal session."
+
+	// SendControlDescription describes the finite key allowlist and its active
+	// session-only delivery contract.
+	SendControlDescription = "Sends one allowlisted terminal control key to the active session. Keys are normalized for case and surrounding whitespace; arbitrary bytes, key combinations, and session targeting are not accepted. Returns the canonical key and bytes_sent. Partial writes fail and are not retried."
+)
+
 // read_terminal constants are the single source of truth for the tool's
 // client-facing metadata. The description states the default streaming
 // contract and the explicit polling alternatives.
