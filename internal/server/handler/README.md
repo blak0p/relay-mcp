@@ -52,7 +52,25 @@ s.AddTool(writeTool, h)
 3. Returns exactly `{"closed":false}` for empty, mismatched, or already
    released sessions.
 4. Maps a teardown failure to `-32008` with
-   `{session_id, reason:"cleanup_failed"}`, after releasing the slot.
+    `{session_id, reason:"cleanup_failed"}`, after releasing the slot.
+
+## `send_control`
+
+`NewSendControlHandler(reg)` returns the `send_control` handler. It:
+
+1. Requires a string `key`, normalizes case and surrounding whitespace, and
+   rejects values outside the fixed 24-key allowlist with `-32602` before any
+   registry lookup.
+2. Gets the existing active session; no session returns `-32004`.
+3. Writes the resolved bytes exactly once through `session.Write`. Typed write
+   failures preserve the existing error codes; generic and short-write failures
+   use `-32003`.
+4. Returns exactly `{key, bytes_sent}` on success, with the canonical key and
+   the byte count reported by the write.
+
+The handler does not accept session identifiers, arbitrary bytes, or key
+combinations. A nil-error short write is converted to `io.ErrShortWrite` and
+is never retried.
 
 ### Error code table
 
@@ -61,12 +79,12 @@ s.AddTool(writeTool, h)
 | `-32001`| session_already_exists    | A session is already registered                | `{existing_id}`       |
 | `-32002`| bash_not_found            | `exec.LookPath("bash")` fails                 | —                     |
 | `-32003`| spawn_failed              | `pty.StartWithSize` or registry Put fails     | — (or error text)     |
-| `-32004`| session_not_found         | `write_terminal` with no active session       | —                     |
-| `-32005`| session_not_alive         | `write_terminal` target's bash process is dead | `{session_id}`       |
+| `-32004`| session_not_found         | `write_terminal` or `send_control` without an active session | — |
+| `-32005`| session_not_alive         | a target session's bash process is dead | `{session_id}`       |
 | `-32006`| write_too_large           | `write_terminal` payload exceeds 1 MiB        | `{session_id, limit}` |
-| `-32007`| session_closed            | `write_terminal` observes `closed` flag set   | `{session_id}`        |
+| `-32007`| session_closed            | a write observes `closed` flag set   | `{session_id}`        |
 | `-32008`| session_cleanup_failed    | `close_terminal` teardown fails               | `{session_id, reason}`|
-| `-32602`| invalid_argument          | `write_terminal` `data` or `close_terminal` `session_id` missing/wrong-typed | — |
+| `-32602`| invalid_argument          | `write_terminal` `data`, `send_control` `key`, or `close_terminal` `session_id` missing/wrong-typed | — |
 
 ### Why errors travel inside `CallToolResult`, not as JSON-RPC error responses
 

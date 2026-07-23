@@ -29,6 +29,7 @@ go.work.sum
 # --- OpenCode runtime metadata ---
 # Local agent registry cache, not part of the project.
 .atl/
+/.opencode/
 
 # --- Reference material (not ours) ---
 # The original-repo/ directory contains the abandoned Forge (Node/TS) project

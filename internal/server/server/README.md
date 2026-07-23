@@ -13,13 +13,18 @@ session core (`internal/session/...`) and the MCP protocol layer.
 | `create_terminal` | `description.CreateTerminalName`| `handler.New(reg)`             | v1        |
 | `write_terminal`  | `description.WriteTerminalName`| `handler.NewWriteTerminalHandler(reg)` | v1 |
 | `read_terminal`   | `description.ReadTerminalName` | `handler.NewReadTerminalHandler(reg)` | v1 |
-| `send_control`    | (future)                        | (future)                      | planned   |
+| `send_control`    | `description.SendControlName` | `handler.NewSendControlHandler(reg)` | v1 |
 | `close_terminal`  | `description.CloseTerminalName` | `handler.NewCloseTerminalHandler(reg)` | v1 |
 
 Each tool's name, summary, and description come from the `description` package
 (REQ-008: single source of truth for tool metadata). The handler receives the
 shared `*registry.Registry` by injection — the same instance must be passed to
 every handler so the single-session invariant holds.
+
+`send_control` declares one required string argument, `key`. The handler
+normalizes it into one of 24 allowlisted control sequences and writes it once
+to the active session. Its successful payload is exactly `{key, bytes_sent}`;
+unsupported keys, arbitrary bytes, and session targeting are not exposed.
 
 ## Usage
 

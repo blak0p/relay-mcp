@@ -18,12 +18,14 @@ coupling to each other.
 | `WriteTerminalName`            | `"write_terminal"`  | `server` (tool registration) |
 | `WriteTerminalSummary`         | one-line summary    | `server` (tool registration) |
 | `WriteTerminalDescription`     | full description (states 1 MiB cap + raw-byte/no-auto-Enter contract) | `server` (tool registration) |
+| `SendControlName`              | `"send_control"`     | `server` (tool registration) |
+| `SendControlSummary`           | one-line summary      | `server` (tool registration) |
+| `SendControlDescription`       | full description (states finite allowlist, active-session-only delivery, and no-retry short writes) | `server` (tool registration) |
 | `ReadTerminalName`             | `"read_terminal"`   | `server` (tool registration), `handler` (request binding) |
 | `ReadTerminalSummary`          | one-line summary    | `server` (tool registration) |
 | `ReadTerminalDescription`      | full description (states default progress streaming and bounded polling alternatives) | `server` (tool registration) |
 
-The remaining two tools (`send_control`, `close_terminal`) will add their own
-constant blocks here in follow-up SDDs.
+Each current v1 tool has its own constant block here.
 
 ## Usage
 

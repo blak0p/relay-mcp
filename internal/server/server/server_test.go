@@ -169,6 +169,38 @@ func TestNewServer_RegistersCloseTerminalTool(t *testing.T) {
 	}
 }
 
+func TestNewServer_RegistersSendControlTool(t *testing.T) {
+	t.Parallel()
+	s, err := NewServer(registry.NewRegistry())
+	if err != nil {
+		t.Fatalf("NewServer = %v, want nil", err)
+	}
+
+	control, ok := s.ListTools()[description.SendControlName]
+	if !ok {
+		t.Fatalf("send_control not registered; registered tools = %v", toolNames(s.ListTools()))
+	}
+	if control.Tool.Name != description.SendControlName {
+		t.Fatalf("send_control name = %q, want %q", control.Tool.Name, description.SendControlName)
+	}
+	if control.Tool.Description != description.SendControlDescription {
+		t.Fatalf("send_control description = %q, want %q", control.Tool.Description, description.SendControlDescription)
+	}
+	if control.Handler == nil {
+		t.Fatal("send_control handler is nil")
+	}
+	if len(control.Tool.InputSchema.Properties) != 1 {
+		t.Fatalf("send_control properties = %v, want only key", control.Tool.InputSchema.Properties)
+	}
+	property, ok := control.Tool.InputSchema.Properties["key"].(map[string]any)
+	if !ok || property["type"] != "string" {
+		t.Fatalf("send_control key schema = %#v, want required string", control.Tool.InputSchema.Properties["key"])
+	}
+	if !containsString(control.Tool.InputSchema.Required, "key") {
+		t.Fatalf("send_control required = %v, want key", control.Tool.InputSchema.Required)
+	}
+}
+
 func assertReadStringProperty(t *testing.T, props map[string]any, name string, wantEnum []string) {
 	t.Helper()
 	property, ok := props[name].(map[string]any)

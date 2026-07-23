@@ -47,6 +47,16 @@ func NewServer(reg *registry.Registry) (*mcpserver.MCPServer, error) {
 	)
 	s.AddTool(writeTool, handler.NewWriteTerminalHandler(reg))
 
+	controlTool := mcp.NewTool(
+		description.SendControlName,
+		mcp.WithDescription(description.SendControlDescription),
+		mcp.WithString("key",
+			mcp.Required(),
+			mcp.Description("Allowlisted terminal control key, such as ctrl+c, up, enter, or escape."),
+		),
+	)
+	s.AddTool(controlTool, handler.NewSendControlHandler(reg))
+
 	readTool := mcp.NewTool(
 		description.ReadTerminalName,
 		mcp.WithDescription(description.ReadTerminalDescription),

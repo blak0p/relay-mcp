@@ -489,6 +489,71 @@ func TestE2E_WriteTerminal_RoundTrip(t *testing.T) {
 	}
 }
 
+type sendControlResult struct {
+	Key       string `json:"key"`
+	BytesSent int    `json:"bytes_sent"`
+}
+
+func callSendControl(t *testing.T, probe *e2eProbe, id int, key string) sendControlResult {
+	t.Helper()
+	resp := probe.send(t, id, "tools/call", map[string]any{
+		"name":      "send_control",
+		"arguments": map[string]any{"key": key},
+	})
+	if resp.Error != nil {
+		t.Fatalf("send_control (id=%d) returned JSON-RPC error: %+v", id, resp.Error)
+	}
+	if resp.Result == nil {
+		t.Fatalf("send_control (id=%d) returned no result", id)
+	}
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(resp.Result, &wrapper); err != nil {
+		t.Fatalf("unmarshal send_control CallToolResult: %v", err)
+	}
+	if wrapper.IsError || len(wrapper.Content) != 1 || wrapper.Content[0].Type != "text" {
+		t.Fatalf("unexpected send_control result: %s", resp.Result)
+	}
+	var out sendControlResult
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &out); err != nil {
+		t.Fatalf("unmarshal send_control payload %q: %v", wrapper.Content[0].Text, err)
+	}
+	return out
+}
+
+func TestE2E_SendControl_RoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping process lifecycle E2E test in -short mode")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not in PATH; skipping E2E test")
+	}
+	probe := newE2EProbe(t)
+	initResp := probe.send(t, 1, "initialize", map[string]any{
+		"protocolVersion": "2025-11-25",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "e2e-test", "version": "0.0.1"},
+	})
+	if initResp.Error != nil {
+		t.Fatalf("initialize returned error: %+v", initResp.Error)
+	}
+
+	created := callCreateTerminal(t, probe, 2)
+	got := callSendControl(t, probe, 3, "UP")
+	if got.Key != "up" || got.BytesSent != 3 {
+		t.Fatalf("send_control result = %#v, want {key:up bytes_sent:3}", got)
+	}
+	closed := callCloseTerminal(t, probe, 4, created.ID)
+	if !closed.Closed {
+		t.Fatalf("close_terminal = %#v, want closed true", closed)
+	}
+}
+
 func TestE2E_ReadTerminal_StreamsProgressBeforeFinalResponse(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not in PATH; skipping E2E test")
