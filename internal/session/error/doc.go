@@ -3,14 +3,14 @@
 // ErrSessionAlreadyExists. The handler layer maps each sentinel to a distinct
 // JSON-RPC-style error code (see the package README for the full mapping):
 //
-//   -32001 ErrSessionAlreadyExists
-//   -32002 ErrBashNotFound
-//   -32003 ErrSpawnFailed
-//   -32004 ErrSessionNotFound (create_terminal + write_terminal lookup failures)
-//   -32005 ErrSessionNotAlive
-//   -32006 ErrWriteTooLarge
-//   -32007 ErrSessionClosed
-//   -32602 ErrInvalidArgument (JSON-RPC invalid_params; missing/wrong-typed data)
+//	-32001 ErrSessionAlreadyExists
+//	-32002 ErrBashNotFound
+//	-32003 ErrSpawnFailed
+//	-32004 ErrSessionNotFound (create_terminal + write_terminal lookup failures)
+//	-32005 ErrSessionNotAlive
+//	-32006 ErrWriteTooLarge
+//	-32007 ErrSessionClosed
+//	-32602 ErrInvalidArgument (JSON-RPC invalid_params; missing/wrong-typed data)
 //
 // ErrSessionNotFound keeps -32004 to avoid breaking callers that branched on
 // the pre-existing code; the write_terminal sentinels take -32005..-32007.
