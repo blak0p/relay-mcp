@@ -520,7 +520,7 @@ func TestE2E_ReadTerminal_StreamsProgressBeforeFinalResponse(t *testing.T) {
 	}
 
 	marker := "READ_TERMINAL_E2E"
-	callWriteTerminal(t, probe, 4, "printf '"+marker+"\\n'; exit\n")
+	callWriteTerminal(t, probe, 4, "printf '"+marker+"\\n'; read -r _\n")
 	probe.sendRequest(t, 5, "tools/call", map[string]any{
 		"name":      "read_terminal",
 		"arguments": map[string]any{},
@@ -529,7 +529,7 @@ func TestE2E_ReadTerminal_StreamsProgressBeforeFinalResponse(t *testing.T) {
 
 	sawProgress := false
 	sawMarker := false
-	for {
+	for !sawMarker {
 		line, err := probe.readLine(t)
 		if err != nil {
 			t.Fatalf("read read_terminal response: %v", err)
@@ -555,30 +555,64 @@ func TestE2E_ReadTerminal_StreamsProgressBeforeFinalResponse(t *testing.T) {
 			sawMarker = sawMarker || strings.Contains(progress.Output, marker)
 			continue
 		}
-		if string(message.ID) != "5" {
+		if string(message.ID) == "5" {
+			t.Fatal("read_terminal final response arrived before a progress notification containing the marker")
+		}
+		t.Fatalf("unexpected message before read_terminal progress: %+v", message)
+	}
+	if !sawProgress {
+		t.Fatal("read_terminal progress was not observed before releasing the terminal")
+	}
+
+	// Keep the terminal running until the stream has delivered the marker.
+	probe.sendRequest(t, 6, "tools/call", map[string]any{
+		"name":      "write_terminal",
+		"arguments": map[string]any{"data": "\nexit\n"},
+	})
+
+	sawReleaseResponse := false
+	sawFinalResponse := false
+	for !sawReleaseResponse || !sawFinalResponse {
+		line, err := probe.readLine(t)
+		if err != nil {
+			t.Fatalf("read terminal completion response: %v", err)
+		}
+		message := unmarshalJSONRPCMessage(t, line)
+		if message.Method == "notifications/progress" {
+			continue
+		}
+		switch string(message.ID) {
+		case "6":
+			if message.Error != nil {
+				t.Fatalf("release write_terminal returned JSON-RPC error: %+v", message.Error)
+			}
+			if message.Result == nil {
+				t.Fatal("release write_terminal returned no result")
+			}
+			released := parseWriteToolResultFromResult(t, message.Result)
+			if released.BytesWritten != len("\nexit\n") {
+				t.Fatalf("release write_terminal bytes_written = %d, want %d", released.BytesWritten, len("\nexit\n"))
+			}
+			sawReleaseResponse = true
+		case "5":
+			if message.Error != nil {
+				t.Fatalf("read_terminal returned JSON-RPC error: %+v", message.Error)
+			}
+			if message.Result == nil {
+				t.Fatal("read_terminal returned no final result")
+			}
+			var final struct {
+				IsError bool `json:"isError"`
+			}
+			if err := json.Unmarshal(message.Result, &final); err != nil {
+				t.Fatalf("unmarshal read_terminal final result: %v", err)
+			}
+			if final.IsError {
+				t.Fatalf("read_terminal final result is an error: %s", message.Result)
+			}
+			sawFinalResponse = true
+		default:
 			t.Fatalf("unexpected message before read_terminal response: %+v", message)
 		}
-		if message.Error != nil {
-			t.Fatalf("read_terminal returned JSON-RPC error: %+v", message.Error)
-		}
-		if message.Result == nil {
-			t.Fatal("read_terminal returned no final result")
-		}
-		var final struct {
-			IsError bool `json:"isError"`
-		}
-		if err := json.Unmarshal(message.Result, &final); err != nil {
-			t.Fatalf("unmarshal read_terminal final result: %v", err)
-		}
-		if final.IsError {
-			t.Fatalf("read_terminal final result is an error: %s", message.Result)
-		}
-		if !sawProgress {
-			t.Fatal("read_terminal final response arrived before a progress notification")
-		}
-		if !sawMarker {
-			t.Fatalf("progress notifications did not contain marker %q", marker)
-		}
-		return
 	}
 }
