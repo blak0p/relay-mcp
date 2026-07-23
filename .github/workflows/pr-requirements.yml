@@ -1,0 +1,62 @@
+name: PR Requirements
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  pull-requests: write
+  issues: read
+
+jobs:
+  check:
+    name: Check issue linked and approved
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-assign needs-review
+        uses: actions/github-script@v7
+        if: github.event.action == 'opened' || github.event.action == 'reopened'
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['status:needs-review'],
+            });
+
+      - uses: actions/github-script@v7
+        id: check
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Extract issue references from PR body
+            const body = pr.body || '';
+            const refs = body.match(/(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/gi) || [];
+            const issues = [...new Set(refs.map(r => parseInt(r.match(/\d+/)[0])))];
+
+            if (issues.length === 0) {
+              core.setFailed('PR must reference at least one issue (e.g. "Closes #123").');
+              return;
+            }
+
+            for (const issueNum of issues) {
+              const { data: issue } = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNum,
+              });
+
+              const hasApproved = issue.labels.some(l => l.name === 'status:approved');
+              if (!hasApproved) {
+                core.setFailed(`Referenced issue #${issueNum} must have the "status:approved" label.`);
+                return;
+              }
+            }
+
+            core.notice(`All referenced issues (${issues.join(', ')}) have status:approved.`);
