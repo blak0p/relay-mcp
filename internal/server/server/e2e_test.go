@@ -554,6 +554,43 @@ func TestE2E_SendControl_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestE2E_SendControl_NoActiveSessionReturnsEstablishedEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping stdio E2E test in -short mode")
+	}
+	probe := newE2EProbe(t)
+	initResp := probe.send(t, 1, "initialize", map[string]any{
+		"protocolVersion": "2025-11-25",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "e2e-test", "version": "0.0.1"},
+	})
+	if initResp.Error != nil {
+		t.Fatalf("initialize returned error: %+v", initResp.Error)
+	}
+
+	resp := probe.send(t, 2, "tools/call", map[string]any{
+		"name":      "send_control",
+		"arguments": map[string]any{"key": "enter"},
+	})
+	if resp.Error != nil {
+		t.Fatalf("send_control returned JSON-RPC error: %+v", resp.Error)
+	}
+	if resp.Result == nil {
+		t.Fatal("send_control returned no result")
+	}
+
+	errEnv := parseToolErrorFromResult(t, resp.Result)
+	if errEnv.Code != -32004 {
+		t.Fatalf("send_control no-active-session code = %d, want -32004", errEnv.Code)
+	}
+	if errEnv.Message != "no active session; call create_terminal first" {
+		t.Fatalf("send_control no-active-session message = %q, want established envelope", errEnv.Message)
+	}
+	if len(errEnv.Data) != 0 {
+		t.Fatalf("send_control no-active-session data = %s, want omitted", errEnv.Data)
+	}
+}
+
 func TestE2E_ReadTerminal_StreamsProgressBeforeFinalResponse(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not in PATH; skipping E2E test")
