@@ -13,8 +13,8 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/blak0p/relay-mcp/internal/session/liveness"
 	serror "github.com/blak0p/relay-mcp/internal/session/error"
+	"github.com/blak0p/relay-mcp/internal/session/liveness"
 )
 
 var sessionIDFormat = regexp.MustCompile(`^term_[0-9a-f]{16}$`)

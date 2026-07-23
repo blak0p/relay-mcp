@@ -46,6 +46,12 @@ const (
 	StateError SessionState = "error"
 )
 
+// CloseResult describes the final process state observed during Shutdown.
+type CloseResult struct {
+	State    SessionState
+	ExitCode int
+}
+
 // Session represents one PTY-backed bash process.
 type Session struct {
 	ID        string
@@ -61,10 +67,15 @@ type Session struct {
 	closed atomic.Bool // guards Close against double-close; atomic for lock-free reads from Write
 	mu     sync.Mutex  // guards State and the double-close idempotency check in Close
 
-	writeMu    sync.Mutex // serializes concurrent Write calls so byte streams do not interleave in the PTY (REQ-WT-005)
-	ptyWriter  ptyWriter  // write target; defaults to PTY. Overridden only by tests via setPtyWriterForTest.
-	outputOnce sync.Once  // ensures no consumer competes with the PTY output reader
-	outputDone chan struct{}
+	writeMu     sync.Mutex // serializes concurrent Write calls so byte streams do not interleave in the PTY (REQ-WT-005)
+	ptyWriter   ptyWriter  // write target; defaults to PTY. Overridden only by tests via setPtyWriterForTest.
+	outputOnce  sync.Once  // ensures no consumer competes with the PTY output reader
+	outputDone  chan struct{}
+	waitOnce    sync.Once // makes Cmd.Wait authoritative for both output and shutdown paths
+	waitDone    chan struct{}
+	waitErr     error
+	waitCalls   atomic.Int32 // invariant counter: Cmd.Wait must execute exactly once
+	signalGroup func(int, syscall.Signal) error
 }
 
 // New constructs a Session from a started (or about-to-start) command and its
@@ -82,6 +93,10 @@ func New(cmd *exec.Cmd, pty *os.File) *Session {
 		Output:     output.New(output.DefaultCapacity),
 		ptyWriter:  pty, // default write target is the real PTY; tests override via setPtyWriterForTest
 		outputDone: make(chan struct{}),
+		waitDone:   make(chan struct{}),
+		signalGroup: func(pgid int, signal syscall.Signal) error {
+			return syscall.Kill(-pgid, signal)
+		},
 	}
 }
 
@@ -129,7 +144,7 @@ func isTerminalReadEnd(err error) bool {
 func (s *Session) finishOutputAfterExit() {
 	state := StateExited
 	if s.Cmd != nil && s.Cmd.Process != nil {
-		if err := s.Cmd.Wait(); err != nil {
+		if err := s.wait(); err != nil {
 			state = StateError
 		}
 	}
@@ -138,6 +153,41 @@ func (s *Session) finishOutputAfterExit() {
 		return
 	}
 	s.finishOutput(output.StatusError, state)
+}
+
+func (s *Session) wait() error {
+	s.waitOnce.Do(func() {
+		s.waitCalls.Add(1)
+		if s.Cmd == nil || s.Cmd.Process == nil {
+			s.waitErr = fmt.Errorf("wait session: missing process")
+		} else {
+			s.waitErr = s.Cmd.Wait()
+		}
+		close(s.waitDone)
+	})
+	<-s.waitDone
+	return s.waitErr
+}
+
+func (s *Session) setSignalGroupForTest(signal func(int, syscall.Signal) error) {
+	s.signalGroup = signal
+}
+
+func (s *Session) finishShutdown(result CloseResult) (CloseResult, error) {
+	s.mu.Lock()
+	s.State = result.State
+	s.mu.Unlock()
+	if err := s.Close(); err != nil {
+		return result, errors.Join(serror.ErrSessionCleanup, fmt.Errorf("close PTY: %w", err))
+	}
+	return result, nil
+}
+
+func (s *Session) failShutdown(result CloseResult, cause error) (CloseResult, error) {
+	if err := s.Close(); err != nil {
+		return result, errors.Join(serror.ErrSessionCleanup, cause, fmt.Errorf("close PTY: %w", err))
+	}
+	return result, errors.Join(serror.ErrSessionCleanup, cause)
 }
 
 func (s *Session) finishOutput(status output.Status, state SessionState) {
@@ -173,6 +223,45 @@ func (s *Session) Close() error {
 		return s.PTY.Close()
 	}
 	return nil
+}
+
+// Shutdown terminates the session's complete process group and reaps its
+// leader. It gives SIGTERM the supplied grace period before sending SIGKILL.
+func (s *Session) Shutdown(grace time.Duration) (CloseResult, error) {
+	result := CloseResult{State: s.State, ExitCode: -1}
+	if s.Cmd == nil || s.Cmd.Process == nil {
+		return s.failShutdown(result, errors.New("missing process"))
+	}
+	if s.Cmd.ProcessState != nil {
+		result.State = classifyExit(s.Cmd)
+		result.ExitCode = s.Cmd.ProcessState.ExitCode()
+		return s.finishShutdown(result)
+	}
+	pid := s.PID
+	if pid == 0 {
+		pid = s.Cmd.Process.Pid
+	}
+	if err := s.signalGroup(pid, syscall.SIGTERM); err != nil {
+		return s.failShutdown(result, fmt.Errorf("terminate process group %d: %w", pid, err))
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- s.wait() }()
+	if grace < 0 {
+		grace = 0
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(grace):
+		if err := s.signalGroup(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return s.failShutdown(result, fmt.Errorf("force terminate process group %d: %w", pid, err))
+		}
+		<-waitDone
+	}
+	result.State = classifyExit(s.Cmd)
+	if s.Cmd.ProcessState != nil && s.Cmd.ProcessState.Exited() {
+		result.ExitCode = s.Cmd.ProcessState.ExitCode()
+	}
+	return s.finishShutdown(result)
 }
 
 // ReconcileState performs the lazy liveness reconciliation mandated by the

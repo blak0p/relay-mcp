@@ -14,7 +14,7 @@ session core (`internal/session/...`) and the MCP protocol layer.
 | `write_terminal`  | `description.WriteTerminalName`| `handler.NewWriteTerminalHandler(reg)` | v1 |
 | `read_terminal`   | `description.ReadTerminalName` | `handler.NewReadTerminalHandler(reg)` | v1 |
 | `send_control`    | (future)                        | (future)                      | planned   |
-| `close_terminal`  | (future)                        | (future)                      | planned   |
+| `close_terminal`  | `description.CloseTerminalName` | `handler.NewCloseTerminalHandler(reg)` | v1 |
 
 Each tool's name, summary, and description come from the `description` package
 (REQ-008: single source of truth for tool metadata). The handler receives the

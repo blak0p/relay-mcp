@@ -137,6 +137,38 @@ func TestNewServer_RegistersReadTerminalTool(t *testing.T) {
 	}
 }
 
+func TestNewServer_RegistersCloseTerminalTool(t *testing.T) {
+	t.Parallel()
+	s, err := NewServer(registry.NewRegistry())
+	if err != nil {
+		t.Fatalf("NewServer = %v, want nil", err)
+	}
+
+	close, ok := s.ListTools()[description.CloseTerminalName]
+	if !ok {
+		t.Fatalf("close_terminal not registered; registered tools = %v", toolNames(s.ListTools()))
+	}
+	if close.Tool.Name != description.CloseTerminalName {
+		t.Fatalf("close_terminal name = %q, want %q", close.Tool.Name, description.CloseTerminalName)
+	}
+	if close.Tool.Description != description.CloseTerminalDescription {
+		t.Fatalf("close_terminal description = %q, want %q", close.Tool.Description, description.CloseTerminalDescription)
+	}
+	if close.Handler == nil {
+		t.Fatal("close_terminal handler is nil")
+	}
+	if len(close.Tool.InputSchema.Properties) != 1 {
+		t.Fatalf("close_terminal properties = %v, want only session_id", close.Tool.InputSchema.Properties)
+	}
+	property, ok := close.Tool.InputSchema.Properties["session_id"].(map[string]any)
+	if !ok || property["type"] != "string" {
+		t.Fatalf("close_terminal session_id schema = %#v, want required string", close.Tool.InputSchema.Properties["session_id"])
+	}
+	if !containsString(close.Tool.InputSchema.Required, "session_id") {
+		t.Fatalf("close_terminal required = %v, want session_id", close.Tool.InputSchema.Required)
+	}
+}
+
 func assertReadStringProperty(t *testing.T, props map[string]any, name string, wantEnum []string) {
 	t.Helper()
 	property, ok := props[name].(map[string]any)

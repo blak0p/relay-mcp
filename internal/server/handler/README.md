@@ -41,6 +41,19 @@ h := handler.NewWriteTerminalHandler(reg)
 s.AddTool(writeTool, h)
 ```
 
+## `close_terminal`
+
+`NewCloseTerminalHandler(reg)` returns the `close_terminal` handler. It:
+
+1. Requires a string `session_id`; missing or wrong-typed values return
+   `-32602` without changing the registry.
+2. Closes only the matching session and returns
+   `{closed:true, status, exit_code}` after lifecycle teardown.
+3. Returns exactly `{"closed":false}` for empty, mismatched, or already
+   released sessions.
+4. Maps a teardown failure to `-32008` with
+   `{session_id, reason:"cleanup_failed"}`, after releasing the slot.
+
 ### Error code table
 
 | Code    | Constant                  | Trigger                                        | `data`                |
@@ -52,7 +65,8 @@ s.AddTool(writeTool, h)
 | `-32005`| session_not_alive         | `write_terminal` target's bash process is dead | `{session_id}`       |
 | `-32006`| write_too_large           | `write_terminal` payload exceeds 1 MiB        | `{session_id, limit}` |
 | `-32007`| session_closed            | `write_terminal` observes `closed` flag set   | `{session_id}`        |
-| `-32602`| invalid_argument          | `write_terminal` missing/wrong-typed `data`   | —                     |
+| `-32008`| session_cleanup_failed    | `close_terminal` teardown fails               | `{session_id, reason}`|
+| `-32602`| invalid_argument          | `write_terminal` `data` or `close_terminal` `session_id` missing/wrong-typed | — |
 
 ### Why errors travel inside `CallToolResult`, not as JSON-RPC error responses
 
