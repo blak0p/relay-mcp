@@ -244,6 +244,34 @@ func TestE2E_CreateTerminal_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestE2E_CloseTerminal_ReleasesSlotForNextCreate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping process lifecycle E2E test in -short mode")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not in PATH; skipping E2E test")
+	}
+	probe := newE2EProbe(t)
+	initResp := probe.send(t, 1, "initialize", map[string]any{
+		"protocolVersion": "2025-11-25",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "e2e-test", "version": "0.0.1"},
+	})
+	if initResp.Error != nil {
+		t.Fatalf("initialize returned error: %+v", initResp.Error)
+	}
+
+	first := callCreateTerminal(t, probe, 2)
+	closed := callCloseTerminal(t, probe, 3, first.ID)
+	if !closed.Closed || closed.Status != "error" || closed.ExitCode != -1 {
+		t.Fatalf("close_terminal = %#v, want closed error session with exit_code -1", closed)
+	}
+	second := callCreateTerminal(t, probe, 4)
+	if second.ID == first.ID || second.State != "running" {
+		t.Fatalf("second create = %#v, want a new running session after close", second)
+	}
+}
+
 // createTerminalResult is the success payload of create_terminal.
 type createTerminalResult struct {
 	ID        string `json:"id"`
@@ -264,6 +292,44 @@ func callCreateTerminal(t *testing.T, probe *e2eProbe, id int) createTerminalRes
 		t.Fatalf("create_terminal (id=%d) returned no result", id)
 	}
 	return parseToolResultFromResult(t, resp.Result)
+}
+
+type closeTerminalResult struct {
+	Closed   bool   `json:"closed"`
+	Status   string `json:"status"`
+	ExitCode int    `json:"exit_code"`
+}
+
+func callCloseTerminal(t *testing.T, probe *e2eProbe, id int, sessionID string) closeTerminalResult {
+	t.Helper()
+	resp := probe.send(t, id, "tools/call", map[string]any{
+		"name":      "close_terminal",
+		"arguments": map[string]any{"session_id": sessionID},
+	})
+	if resp.Error != nil {
+		t.Fatalf("close_terminal (id=%d) returned JSON-RPC error: %+v", id, resp.Error)
+	}
+	if resp.Result == nil {
+		t.Fatalf("close_terminal (id=%d) returned no result", id)
+	}
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(resp.Result, &wrapper); err != nil {
+		t.Fatalf("unmarshal close_terminal CallToolResult: %v", err)
+	}
+	if wrapper.IsError || len(wrapper.Content) != 1 || wrapper.Content[0].Type != "text" {
+		t.Fatalf("unexpected close_terminal result: %s", resp.Result)
+	}
+	var out closeTerminalResult
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &out); err != nil {
+		t.Fatalf("unmarshal close_terminal payload %q: %v", wrapper.Content[0].Text, err)
+	}
+	return out
 }
 
 // parseToolResultFromResult extracts the JSON success payload from a

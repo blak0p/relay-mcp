@@ -71,5 +71,15 @@ func NewServer(reg *registry.Registry) (*mcpserver.MCPServer, error) {
 	)
 	s.AddTool(readTool, handler.NewReadTerminalHandler(reg))
 
+	closeTool := mcp.NewTool(
+		description.CloseTerminalName,
+		mcp.WithDescription(description.CloseTerminalDescription),
+		mcp.WithString("session_id",
+			mcp.Required(),
+			mcp.Description("Identifier returned by create_terminal for the session to close."),
+		),
+	)
+	s.AddTool(closeTool, handler.NewCloseTerminalHandler(reg))
+
 	return s, nil
 }
