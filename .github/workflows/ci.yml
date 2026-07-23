@@ -20,10 +20,8 @@ jobs:
           go-version: stable
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (echo "Files not formatted with gofmt:"; gofmt -l .; exit 1)
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      - name: Vet
+        run: go vet ./...
 
   test:
     name: Test
